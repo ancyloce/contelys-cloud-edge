@@ -10,9 +10,14 @@ type Request struct {
 	Instances    string
 	Installation string
 	Fragments    string
-	Secrets      string
-	Revision     string
-	Out          string
+	// Contracts is the directory of the deployables' OpenAPI contracts, openapi/ of the shared
+	// contracts, which holds the contract of each domain service under its slug.
+	Contracts string
+	Secrets   string
+	Revision  string
+	// Image is Edge's image as the version manifest pins it, which the trial load starts.
+	Image string
+	Out   string
 }
 
 // Inputs is everything the renderer reads, decoded from its files. The renderer checks the rules of
@@ -24,6 +29,10 @@ type Inputs struct {
 	Installation Installation
 	// Fragments are sorted by slug.
 	Fragments []Fragment
+	// Contracts hold the paths of the OpenAPI contract of each deployable that ships a fragment, as
+	// the contract writes them, such as /api/v1/projects/{projectId}. A deployable without a
+	// contract has no entry.
+	Contracts map[Slug][]string
 	Secrets   Secrets
 }
 
@@ -40,6 +49,14 @@ type Instances map[Slug][]Instance
 // EdgeSlug is Edge's own slug. Its instances in the instances file are the Edge instances that the
 // renderer writes an apisix.yaml for.
 const EdgeSlug Slug = "edge"
+
+// KeycloakSlug names Keycloak's instances in the instances file. Keycloak is an infrastructure
+// product and not a deployable, so Edge's own template holds its routes (section 03).
+const KeycloakSlug Slug = "keycloak"
+
+// AuthoringSlug is Authoring's slug. Its fragment alone may claim the remainder of the application
+// hostname, and it has no OpenAPI contract (section 03).
+const AuthoringSlug Slug = "authoring"
 
 // Instance is one instance of a deployable. A weight of 1 serves and 0 drains.
 type Instance struct {
@@ -58,10 +75,13 @@ type Installation struct {
 	CollectorAddresses     []string `yaml:"collector_addresses"`
 }
 
-// Secrets are the contents of the secret files that the renderer copies into apisix.yaml.
+// Secrets are the contents of the secret files: the certificate and key that the renderer copies
+// into apisix.yaml, and the trust store, which each instance mounts and the trial load hands to its
+// instance.
 type Secrets struct {
 	ApplicationCertificate string
 	ApplicationKey         string
+	TrustStore             string
 }
 
 // Fragment is the route fragment of one deployable. Its slug is the name of its directory.

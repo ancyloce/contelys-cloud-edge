@@ -7,7 +7,7 @@ import (
 	"slices"
 )
 
-// check applies the rules of the instances file, the installation file and the fragments' names.
+// check applies the rules of the instances file, the installation file and the route fragments.
 // A broken rule of a fragment is a Refusal; a broken rule of the installation's own files is an
 // error of its inputs.
 func check(in Inputs) error {
@@ -50,6 +50,9 @@ func check(in Inputs) error {
 		if !fragment.Slug.valid() {
 			return &Refusal{Fragment: fragment.Slug, Rule: "the directory name is not a slug"}
 		}
+		if err := checkPaths(fragment, in.Contracts); err != nil {
+			return err
+		}
 	}
-	return nil
+	return checkConflicts(in.Fragments)
 }

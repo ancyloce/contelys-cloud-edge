@@ -23,10 +23,14 @@ type Sink interface {
 // Renderer is the use case behind the render command.
 type Renderer struct {
 	Source Source
+	Trial  Trial
 	Sink   Sink
 }
 
-// Render reads the inputs, renders them and writes the files. A Refusal writes nothing.
+// Render reads the inputs, renders and checks them, loads the rendered files into a trial instance
+// of the image that the request names, and writes them only when that instance loaded every
+// rendered route and upstream. A failure at any step writes nothing, so the current files stay in
+// place and a running Edge keeps serving them.
 func (r Renderer) Render(req Request) error {
 	in, err := r.Source.Read(req)
 	if err != nil {
@@ -34,6 +38,9 @@ func (r Renderer) Render(req Request) error {
 	}
 	out, err := render(in)
 	if err != nil {
+		return err
+	}
+	if err := trialLoad(r.Trial, req.Image, in, out); err != nil {
 		return err
 	}
 	return r.Sink.Write(req.Out, out)
@@ -59,6 +66,9 @@ func render(in Inputs) (Output, error) {
 	}
 	file, err := renderApisix(in)
 	if err != nil {
+		return Output{}, err
+	}
+	if err := checkRendered(file, in.Defaults.Listeners); err != nil {
 		return Output{}, err
 	}
 	out := Output{Config: renderConfig(in)}
@@ -113,7 +123,7 @@ func externalRoute(in Inputs, slug Slug, route FragmentRoute) (Route, error) {
 		return Route{}, fmt.Errorf("traffic %q is not rendered yet, because Edge has no WebSocket rules yet", traffic)
 	}
 	return Route{
-		ID:         routeID("external", slug, route.Paths, route.Methods),
+		ID:         routeID(externalListener, slug, route.Paths, route.Methods),
 		Name:       string(slug) + " " + strings.Join(route.Methods, ",") + " " + strings.Join(route.Paths, " "),
 		Host:       in.Installation.ApplicationHostname,
 		URIs:       route.Paths,
@@ -147,6 +157,10 @@ func upstream(slug Slug, instances []Instance) Upstream {
 		Nodes:        nodes,
 	}
 }
+
+// externalListener names the external listener in the ids of the routes on it, which are the routes
+// of the fragments.
+const externalListener = "external"
 
 // onListener is the condition that binds a route to one listener. A route without it answers on
 // every listener.
