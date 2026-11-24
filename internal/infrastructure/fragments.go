@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"go.yaml.in/yaml/v3"
@@ -90,8 +91,9 @@ func fragmentSchema() (*jsonschema.Schema, error) {
 	return compiler.Compile("fragment.schema.json")
 }
 
-// schemaFailure names the first place in the fragment that breaks the schema, and why, in the
-// library's own English wording.
+// schemaFailure names the first place in the fragment that breaks the schema, and why: the
+// description of the definition under $defs that names forbidden content, or else the library's own
+// English wording.
 func schemaFailure(err error) string {
 	var validation *jsonschema.ValidationError
 	if !errors.As(err, &validation) {
@@ -104,8 +106,32 @@ func schemaFailure(err error) string {
 			if location == "" {
 				location = "/"
 			}
-			return fmt.Sprintf("at %s: %s", location, unit.Error)
+			why := unit.Error.String()
+			if forbidden, found := forbiddenContent(unit.AbsoluteKeywordLocation); found {
+				why = forbidden
+			}
+			return fmt.Sprintf("at %s: %s", location, why)
 		}
 	}
 	return err.Error()
+}
+
+// forbiddenContent is the description of the definition under the fragment schema's $defs that a
+// keyword location points to, such as ...#/$defs/upstreamAddress.
+func forbiddenContent(absoluteKeywordLocation string) (string, bool) {
+	_, pointer, _ := strings.Cut(absoluteKeywordLocation, "#")
+	name, isDefinition := strings.CutPrefix(pointer, "/$defs/")
+	if !isDefinition {
+		return "", false
+	}
+	var schema struct {
+		Defs map[string]struct {
+			Description string `json:"description"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(application.FragmentSchema, &schema); err != nil {
+		return "", false
+	}
+	definition, found := schema.Defs[name]
+	return definition.Description, found && definition.Description != ""
 }
