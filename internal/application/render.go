@@ -104,7 +104,7 @@ func externalRoute(in Inputs, slug Slug, route FragmentRoute) (Route, error) {
 	traffic := cmp.Or(route.Traffic, TrafficAPI)
 	// A route that needs authentication or is a WebSocket route is never rendered without the rules
 	// that keep it safe: forward-auth arrives with ticket 09 and the WebSocket rules with ticket 12 of
-	// the Edge implementation plan. Until tickets 16 and 18 render the limits, timeouts and sizes of
+	// Edge's plan. Until tickets 16 and 18 render the limits, timeouts and sizes of
 	// the traffic classes, every route gets APISIX's own, whatever its class.
 	if auth != AuthAnonymous {
 		return Route{}, fmt.Errorf("auth %q is not rendered yet, because Edge has no forward-auth yet", auth)

@@ -17,7 +17,7 @@ type Request struct {
 
 // Inputs is everything the renderer reads, decoded from its files. The renderer checks the rules of
 // the application before it renders them. The configuration revision joins them with the route
-// that confirms it (ticket 08 of the Edge implementation plan).
+// that confirms it (ticket 08 of Edge's plan).
 type Inputs struct {
 	Defaults     Defaults
 	Instances    Instances
