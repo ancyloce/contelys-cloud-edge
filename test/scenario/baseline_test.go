@@ -157,7 +157,7 @@ routes:
 	}
 }
 
-// Assumption A3 of the implementation plan.
+// Assumption A3 of Edge's plan.
 func TestARouteAnswersOnlyOnItsListenerAndARouteWithoutTheConditionOnEveryListener(t *testing.T) {
 	t.Parallel()
 	current := projectsOnly(t)
