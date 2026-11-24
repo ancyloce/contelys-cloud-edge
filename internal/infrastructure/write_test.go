@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/contelys/contelys-cloud-edge/internal/application"
@@ -58,5 +59,39 @@ func TestTheFilesReplaceTheCurrentOnesAndOnlyTheirOwnerReadsApisixYaml(t *testin
 				t.Errorf("a temporary file is left behind: %s", filepath.Join(dir, entry.Name()))
 			}
 		}
+	}
+}
+
+// APISIX reads ${{NAME}} as a reference to an environment variable, in apisix.yaml and in
+// config.yaml alike, and refuses the whole file when the variable is not set.
+func TestARenderedFileWithAReferenceToAnEnvironmentVariableWritesNothing(t *testing.T) {
+	valid := application.ApisixFile{Routes: []application.Route{{ID: "external.projects.cec1c806d8c4", Host: "app.example.test"}}}
+	referring := application.ApisixFile{Routes: []application.Route{{ID: "external.projects.cec1c806d8c4", Host: "app${{HOST}}.example.test"}}}
+	cases := []struct {
+		name    string
+		out     application.Output
+		message string
+	}{
+		{"in the apisix.yaml of the second instance", application.Output{Instances: []application.InstanceOutput{
+			{Address: "10.0.0.5", File: valid}, {Address: "10.0.0.6", File: referring},
+		}}, "the apisix.yaml of 10.0.0.6 contains ${{, which APISIX reads as a reference to an environment variable"},
+		{"in config.yaml", application.Output{
+			Instances: []application.InstanceOutput{{Address: "10.0.0.5", File: valid}},
+			Config:    application.ConfigFile{Plugins: []string{"${{PLUGIN}}"}},
+		}, "config.yaml contains ${{, which APISIX reads as a reference to an environment variable"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			out := filepath.Join(t.TempDir(), "out")
+
+			err := infrastructure.Files{}.Write(out, c.out)
+
+			if err == nil || !strings.Contains(err.Error(), c.message) {
+				t.Errorf("got %v, want %q", err, c.message)
+			}
+			if _, err := os.Stat(out); !os.IsNotExist(err) {
+				t.Errorf("a refused file was written into %s", out)
+			}
+		})
 	}
 }

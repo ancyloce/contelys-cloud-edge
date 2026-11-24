@@ -36,7 +36,8 @@ import (
 )
 
 const (
-	image       = "contelys/edge"
+	// image is the image that the image target built. The renderer's trial load starts it too.
+	image       = fixture.Image
 	edgeAddress = "edge-1"
 	// The container reaches the stubs in this process through Docker's host gateway.
 	hostGateway = "host.docker.internal"
@@ -191,9 +192,22 @@ type setup struct {
 	loadBalancerAddresses []string
 }
 
-// render writes the inputs and renders them with the edge command. It returns the directory that
-// holds config.yaml and the instance's apisix.yaml.
+// render writes the inputs and renders them with the edge command, whose trial load starts the
+// image. It returns the directory that holds config.yaml and the instance's apisix.yaml.
 func (s setup) render(t *testing.T) string {
+	t.Helper()
+	out := filepath.Join(t.TempDir(), "out")
+	if output, err := s.renderInto(t, out); err != nil {
+		t.Fatalf("edge render: %v: %s", err, output)
+	}
+	return out
+}
+
+// renderInto renders the inputs into out, which may hold the files of a running instance, and
+// returns what the edge command wrote and the error of its exit status. Each deployable except
+// Authoring gets an OpenAPI contract that holds the paths of its fragment, a prefix such as
+// /api/v1/projects/* as /api/v1/projects/{id}.
+func (s setup) renderInto(t *testing.T, out string) (string, error) {
 	t.Helper()
 	in := fixture.NewInputs(t, s.ca, edgeAddress)
 	instances := application.Instances{application.EdgeSlug: {{Address: edgeAddress, Port: 9443, Weight: 1}}}
@@ -204,12 +218,35 @@ func (s setup) render(t *testing.T) string {
 	in.Installation(t, s.loadBalancerAddresses...)
 	for slug, fragment := range s.fragments {
 		in.Fragment(t, string(slug), fragment)
+		if slug != application.AuthoringSlug {
+			in.Contract(t, string(slug), contractPaths(t, fragment)...)
+		}
 	}
-	out := filepath.Join(t.TempDir(), "out")
-	if output, err := exec.Command(edgeCommand, in.Args(out)...).CombinedOutput(); err != nil {
-		t.Fatalf("edge render: %v: %s", err, output)
+	output, err := exec.Command(edgeCommand, in.Args(out)...).CombinedOutput()
+	return string(output), err
+}
+
+// contractPaths are the path templates of a contract that holds every path of a fragment.
+func contractPaths(t *testing.T, fragment string) []string {
+	t.Helper()
+	var decoded struct {
+		Routes []struct {
+			Paths []string `yaml:"paths"`
+		} `yaml:"routes"`
 	}
-	return out
+	if err := yaml.Unmarshal([]byte(fragment), &decoded); err != nil {
+		t.Fatalf("the scenario's fragment: %v", err)
+	}
+	var paths []string
+	for _, route := range decoded.Routes {
+		for _, path := range route.Paths {
+			if base, isPrefix := strings.CutSuffix(path, "*"); isPrefix {
+				path = base + "{id}"
+			}
+			paths = append(paths, path)
+		}
+	}
+	return paths
 }
 
 // edge is one running Edge instance.

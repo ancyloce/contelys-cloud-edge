@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Route fragment",
-  "description": "The external routes of one deployable, which Edge publishes on the application hostname (Edge detailed design, section 03). The upstream of every route is the deployable that ships the fragment.",
+  "description": "The external routes of one deployable, which Edge publishes on the application hostname (Edge detailed design, section 03). The upstream of every route is the deployable that ships the fragment. A route has only the four fields below, so a fragment cannot carry anything else; the fields under $defs name the content that section 03 forbids by the fields that would carry it, so that a refusal names the rule.",
   "type": "object",
   "additionalProperties": false,
   "required": ["routes"],
@@ -41,9 +41,54 @@
             "description": "The traffic class, which selects the limits, timeouts and sizes of section 05. websocket also marks a WebSocket route.",
             "enum": ["api", "authentication", "websocket", "transfer"],
             "default": "api"
-          }
+          },
+          "upstream": { "$ref": "#/$defs/upstreamAddress" },
+          "upstream_id": { "$ref": "#/$defs/upstreamAddress" },
+          "service_id": { "$ref": "#/$defs/upstreamAddress" },
+          "nodes": { "$ref": "#/$defs/upstreamAddress" },
+          "plugins": { "$ref": "#/$defs/plugin" },
+          "plugin_config_id": { "$ref": "#/$defs/plugin" },
+          "script": { "$ref": "#/$defs/code" },
+          "script_id": { "$ref": "#/$defs/code" },
+          "filter_func": { "$ref": "#/$defs/code" },
+          "functions": { "$ref": "#/$defs/code" },
+          "rewrite": { "$ref": "#/$defs/pathRewrite" },
+          "regex_uri": { "$ref": "#/$defs/pathRewrite" },
+          "strip_prefix": { "$ref": "#/$defs/pathRewrite" },
+          "strip_path": { "$ref": "#/$defs/pathRewrite" },
+          "timeout": { "$ref": "#/$defs/rawTimeout" },
+          "timeouts": { "$ref": "#/$defs/rawTimeout" },
+          "max_body_size": { "$ref": "#/$defs/rawSize" },
+          "client_max_body_size": { "$ref": "#/$defs/rawSize" },
+          "body_max_bytes": { "$ref": "#/$defs/rawSize" }
         }
       }
+    }
+  },
+  "$defs": {
+    "upstreamAddress": {
+      "description": "a fragment cannot name an upstream address: the upstream of its routes is always the deployable that ships it, with its instances from the instances file",
+      "not": {}
+    },
+    "plugin": {
+      "description": "a fragment cannot add or configure a plugin",
+      "not": {}
+    },
+    "code": {
+      "description": "a fragment cannot contain Lua or a serverless function",
+      "not": {}
+    },
+    "pathRewrite": {
+      "description": "a fragment cannot rewrite a path",
+      "not": {}
+    },
+    "rawTimeout": {
+      "description": "a fragment cannot set a raw timeout: its traffic class selects the timeouts",
+      "not": {}
+    },
+    "rawSize": {
+      "description": "a fragment cannot set a raw size: its traffic class selects the sizes",
+      "not": {}
     }
   }
 }

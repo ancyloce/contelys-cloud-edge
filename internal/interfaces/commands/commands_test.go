@@ -14,7 +14,8 @@ import (
 
 var complete = []string{"render",
 	"--instances", "instances.yaml", "--installation", "installation.yaml", "--fragments", "fragments",
-	"--secrets", "secrets", "--revision", "0123456789abcdef", "--out", "out",
+	"--contracts", "contracts/openapi", "--secrets", "secrets", "--revision", "0123456789abcdef",
+	"--image", "contelys/edge@sha256:0123", "--out", "out",
 }
 
 func TestTheCommandLineReachesTheRendererAndEachOutcomeHasItsExitCode(t *testing.T) {
@@ -53,7 +54,8 @@ func TestTheCommandLineReachesTheRendererAndEachOutcomeHasItsExitCode(t *testing
 			if reached != (received != nil) {
 				t.Errorf("the renderer was called: %v, want %v", received != nil, reached)
 			}
-			if received != nil && (received.Instances != "instances.yaml" || received.Revision != "0123456789abcdef" || received.Out != "out") {
+			if received != nil && (received.Instances != "instances.yaml" || received.Contracts != "contracts/openapi" ||
+				received.Revision != "0123456789abcdef" || received.Image != "contelys/edge@sha256:0123" || received.Out != "out") {
 				t.Errorf("the renderer received %+v", *received)
 			}
 		})

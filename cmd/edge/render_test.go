@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,6 +11,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"github.com/contelys/contelys-cloud-edge/internal/application"
 	"github.com/contelys/contelys-cloud-edge/test/fixture"
 )
 
@@ -21,7 +23,8 @@ const (
 	externalListenerPort = 9443
 )
 
-// newInputs is a complete set of inputs with the instances of two deployables.
+// newInputs is a complete set of inputs with the instances of two deployables and the contract of
+// projects. Authoring has no contract.
 func newInputs(t *testing.T) *fixture.Inputs {
 	t.Helper()
 	in := fixture.NewInputs(t, fixture.NewAuthority(t), edgeAddress)
@@ -34,6 +37,7 @@ projects:
 authoring:
   - {address: 10.0.2.1, port: 8443, weight: 1}
 `)
+	in.Contract(t, "projects", "/api/v1/projects", "/api/v1/projects/{projectId}")
 	return in
 }
 
@@ -196,23 +200,110 @@ routes:
 	}
 }
 
+func TestARouteThatTheTrialLoadDropsExitsWithOneAndWritesNothing(t *testing.T) {
+	in := newInputs(t)
+	in.Fragment(t, "projects", `
+routes:
+  - {paths: [/api/v1/projects], methods: [GET], auth: anonymous}
+`)
+
+	code, stderr, out := renderWith(t, in, dropsEveryRoute{})
+
+	const want = "edge render: refused: fragment projects: the trial load: APISIX did not load route external.projects.cec1c806d8c4"
+	if code != 1 || !strings.Contains(stderr, want) {
+		t.Errorf("exit code %d, stderr %q; want 1 and %q", code, stderr, want)
+	}
+	if _, err := os.Stat(out.dir); !os.IsNotExist(err) {
+		t.Errorf("a refused rendering wrote %s", out.dir)
+	}
+}
+
+func TestATrialLoadThatCannotRunExitsWithTwoAndWritesNothing(t *testing.T) {
+	in := newInputs(t)
+
+	code, stderr, out := renderWith(t, in, cannotRun{})
+
+	if code != 2 || !strings.Contains(stderr, "edge render: the trial load: cannot reach Docker") {
+		t.Errorf("exit code %d, stderr %q; want 2 and the trial load named", code, stderr)
+	}
+	if _, err := os.Stat(out.dir); !os.IsNotExist(err) {
+		t.Errorf("a failed rendering wrote %s", out.dir)
+	}
+}
+
+// The installation file reaches the rendered apisix.yaml through the application hostname.
+func TestAReferenceToAnEnvironmentVariableInARenderedFileExitsWithTwoAndWritesNothing(t *testing.T) {
+	in := newInputs(t)
+	in.Write(t, "installation.yaml", `
+application_hostname: app${{HOST}}.example.test
+authentication_hostname: auth.example.test
+load_balancer_addresses: []
+collector_addresses: []
+`)
+
+	code, stderr, out := render(t, in)
+
+	const want = "edge render: the apisix.yaml of 10.0.0.5 contains ${{, which APISIX reads as a reference to an environment variable"
+	if code != 2 || !strings.Contains(stderr, want) {
+		t.Errorf("exit code %d, stderr %q; want 2 and %q", code, stderr, want)
+	}
+	if _, err := os.Stat(out.dir); !os.IsNotExist(err) {
+		t.Errorf("a failed rendering wrote %s", out.dir)
+	}
+}
+
 func TestAMissingInputIsAUsageError(t *testing.T) {
 	args := newInputs(t).Args(t.TempDir())
 	var stdout, stderr bytes.Buffer
 
-	code := run(args[:len(args)-2], &stdout, &stderr) // without --out
+	code := run(args[:len(args)-2], &stdout, &stderr, loadsEverything{}) // without --out
 
 	if code != 2 || !strings.Contains(stderr.String(), "--out is required") {
 		t.Errorf("exit code %d, stderr %q; want 2 and the missing flag named", code, stderr.String())
 	}
 }
 
+// The trial load starts a container, which the scenarios exercise. These tests hand the command a
+// trial load whose instance loads everything, drops every route, or cannot run.
+
+type loadsEverything struct{}
+
+func (loadsEverything) Load(c application.Candidate) (application.Loaded, error) {
+	var loaded application.Loaded
+	for _, route := range c.File.Routes {
+		loaded.Routes = append(loaded.Routes, route.ID)
+	}
+	for _, upstream := range c.File.Upstreams {
+		loaded.Upstreams = append(loaded.Upstreams, upstream.ID)
+	}
+	return loaded, nil
+}
+
+type dropsEveryRoute struct{}
+
+func (dropsEveryRoute) Load(c application.Candidate) (application.Loaded, error) {
+	loaded, err := loadsEverything{}.Load(c)
+	loaded.Routes = nil
+	return loaded, err
+}
+
+type cannotRun struct{}
+
+func (cannotRun) Load(application.Candidate) (application.Loaded, error) {
+	return application.Loaded{}, errors.New("the trial load: cannot reach Docker")
+}
+
 // render runs the command and returns its exit code, its standard error and the output directory.
 func render(t *testing.T, in *fixture.Inputs) (int, string, output) {
 	t.Helper()
+	return renderWith(t, in, loadsEverything{})
+}
+
+func renderWith(t *testing.T, in *fixture.Inputs, trial application.Trial) (int, string, output) {
+	t.Helper()
 	out := filepath.Join(t.TempDir(), "out")
 	var stdout, stderr bytes.Buffer
-	code := run(in.Args(out), &stdout, &stderr)
+	code := run(in.Args(out), &stdout, &stderr, trial)
 	return code, stderr.String(), output{dir: out}
 }
 

@@ -157,6 +157,61 @@ routes:
 	}
 }
 
+// APISIX checks every item of apisix.yaml on its own, drops one that fails, and loads the rest
+// (section 03). It drops a whole route for a plugin that it does not know or that config.yaml does
+// not enable, and for a name longer than 256 characters. A dropped route answers 404, and a route
+// whose upstream was dropped answers 502.
+func TestAPISIXDropsAnItemThatFailsItsValidationAndLoadsTheRest(t *testing.T) {
+	t.Parallel()
+	current := projectsOnly(t)
+	out := current.render(t)
+	rendered := map[string][]string{"routes": renderedIDs(t, out, "routes"), "upstreams": renderedIDs(t, out, "upstreams")}
+	onExternal := [][]any{{"server_port", "==", portOf(externalListener)}}
+	route := func(id string, fields map[string]any) map[string]any {
+		r := map[string]any{"id": id, "name": id, "uri": "/" + id, "upstream_id": "projects", "vars": onExternal}
+		for key, value := range fields {
+			r[key] = value
+		}
+		return r
+	}
+	addItems(t, out, map[string][]any{
+		"routes": {
+			route("unknown-plugin", map[string]any{"plugins": map[string]any{"no-such-plugin": map[string]any{}}}),
+			route("disabled-plugin", map[string]any{"plugins": map[string]any{"cors": map[string]any{}}}),
+			route("long-name", map[string]any{"name": strings.Repeat("n", 257)}),
+			route("orphan", map[string]any{"upstream_id": "invalid-upstream"}),
+		},
+		"upstreams": {map[string]any{
+			"id": "invalid-upstream", "type": "roundrobin", "scheme": "ftp",
+			"nodes": []any{map[string]any{"host": hostGateway, "port": current.stubs[0].port, "weight": 1}},
+		}},
+	})
+	edge := startEdge(t, current.ca, out)
+
+	for kind, want := range map[string][]string{
+		"routes":    append(rendered["routes"], "orphan"),
+		"upstreams": rendered["upstreams"],
+	} {
+		loaded := edge.loadedIDs(t, kind)
+		slices.Sort(loaded)
+		slices.Sort(want)
+		if !slices.Equal(loaded, want) {
+			t.Errorf("%s: loaded %v, want %v", kind, loaded, want)
+		}
+	}
+	for path, want := range map[string]int{
+		"/api/v1/projects": stubStatus,
+		"/unknown-plugin":  http.StatusNotFound,
+		"/disabled-plugin": http.StatusNotFound,
+		"/long-name":       http.StatusNotFound,
+		"/orphan":          http.StatusBadGateway,
+	} {
+		if got := edge.get(t, externalListener, path, nil).StatusCode; got != want {
+			t.Errorf("%s: got %d, want %d", path, got, want)
+		}
+	}
+}
+
 // Assumption A3 of Edge's plan.
 func TestARouteAnswersOnlyOnItsListenerAndARouteWithoutTheConditionOnEveryListener(t *testing.T) {
 	t.Parallel()
@@ -368,6 +423,12 @@ func projectsOnly(t *testing.T) setup {
 // addRoute appends a hand-written route to the rendered apisix.yaml.
 func addRoute(t *testing.T, out string, route map[string]any) {
 	t.Helper()
+	addItems(t, out, map[string][]any{"routes": {route}})
+}
+
+// addItems appends hand-written items of each kind, such as routes, to the rendered apisix.yaml.
+func addItems(t *testing.T, out string, items map[string][]any) {
+	t.Helper()
 	path := routesFile(out)
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -377,7 +438,9 @@ func addRoute(t *testing.T, out string, route map[string]any) {
 	if err := yaml.Unmarshal(content, &file); err != nil {
 		t.Fatal(err)
 	}
-	file["routes"] = append(file["routes"].([]any), route)
+	for kind, added := range items {
+		file[kind] = append(file[kind].([]any), added...)
+	}
 	renameIntoPlace(t, path, append(marshal(t, file), "#END\n"...))
 }
 

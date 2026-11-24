@@ -18,7 +18,8 @@ const (
 	ApplicationCertificateFile = "application.crt"
 	ApplicationKeyFile         = "application.key"
 	// TrustStoreFile is the installation's certificate authority. config.yaml names it at its
-	// place in the container, and the renderer only checks that it holds a certificate.
+	// place in the container, and the renderer checks that it holds a certificate and hands it to
+	// the instance of the trial load.
 	TrustStoreFile = "ca.crt"
 )
 
@@ -44,6 +45,10 @@ func (Files) Read(req application.Request) (application.Inputs, error) {
 	if err != nil {
 		return application.Inputs{}, err
 	}
+	contracts, err := readContracts(req.Contracts, fragments)
+	if err != nil {
+		return application.Inputs{}, err
+	}
 	secrets, err := readSecrets(req.Secrets)
 	if err != nil {
 		return application.Inputs{}, err
@@ -53,6 +58,7 @@ func (Files) Read(req application.Request) (application.Inputs, error) {
 		Instances:    instances,
 		Installation: installation,
 		Fragments:    fragments,
+		Contracts:    contracts,
 		Secrets:      secrets,
 	}, nil
 }
@@ -94,5 +100,5 @@ func readSecrets(dir string) (application.Secrets, error) {
 	if !x509.NewCertPool().AppendCertsFromPEM([]byte(trustStore)) {
 		return application.Secrets{}, fmt.Errorf("%s holds no certificate", TrustStoreFile)
 	}
-	return application.Secrets{ApplicationCertificate: certificate, ApplicationKey: key}, nil
+	return application.Secrets{ApplicationCertificate: certificate, ApplicationKey: key, TrustStore: trustStore}, nil
 }

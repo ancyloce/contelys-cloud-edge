@@ -1,5 +1,6 @@
 // Command edge renders Edge's configuration: edge render --instances <file> --installation <file>
-// --fragments <dir> --secrets <dir> --revision <commit> --out <dir> (Edge ADR 0002).
+// --fragments <dir> --contracts <dir> --secrets <dir> --revision <commit> --image <reference>
+// --out <dir> (Edge ADR 0002).
 package main
 
 import (
@@ -12,12 +13,13 @@ import (
 )
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, infrastructure.DockerTrial{}))
 }
 
-// run is the composition root: it hands the file-based infrastructure to the use case and starts
-// the command line.
-func run(args []string, stdout, stderr io.Writer) int {
+// run is the composition root: it hands the file-based infrastructure and the trial load to the use
+// case and starts the command line. The command's own tests hand it a trial load of their own,
+// because the real one starts a container, which the scenarios exercise.
+func run(args []string, stdout, stderr io.Writer, trial application.Trial) int {
 	files := infrastructure.Files{}
-	return commands.Run(args, stdout, stderr, application.Renderer{Source: files, Sink: files}.Render)
+	return commands.Run(args, stdout, stderr, application.Renderer{Source: files, Trial: trial, Sink: files}.Render)
 }
