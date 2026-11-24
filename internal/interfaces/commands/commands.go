@@ -17,7 +17,7 @@ const (
 	Failed   = 2
 )
 
-const usage = "usage: edge render --instances <file> --installation <file> --fragments <dir> --secrets <dir> --revision <commit> --out <dir>"
+const usage = "usage: edge render --instances <file> --installation <file> --fragments <dir> --contracts <dir> --secrets <dir> --revision <commit> --image <reference> --out <dir>"
 
 // Run runs one command and returns its exit code. render is the use case behind edge render.
 func Run(args []string, stdout, stderr io.Writer, render func(application.Request) error) int {
@@ -32,8 +32,10 @@ func Run(args []string, stdout, stderr io.Writer, render func(application.Reques
 	flags.StringVar(&req.Instances, "instances", "", "the instances file")
 	flags.StringVar(&req.Installation, "installation", "", "the installation file")
 	flags.StringVar(&req.Fragments, "fragments", "", "the directory of the route fragments")
+	flags.StringVar(&req.Contracts, "contracts", "", "the directory of the OpenAPI contracts, openapi/ of the shared contracts")
 	flags.StringVar(&req.Secrets, "secrets", "", "the directory of the secret files")
 	flags.StringVar(&req.Revision, "revision", "", "the configuration revision, a Git commit")
+	flags.StringVar(&req.Image, "image", "", "Edge's image, which the trial load starts")
 	flags.StringVar(&req.Out, "out", "", "the output directory")
 	if err := flags.Parse(args[1:]); err != nil {
 		return Failed
