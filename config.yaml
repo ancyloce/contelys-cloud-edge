@@ -1,0 +1,8 @@
+# The image's default config.yaml (Edge detailed design, section 08), which the image scan uses. Each
+# Edge instance mounts the config.yaml that `edge render` writes for its installation in its place.
+# This default only keeps the image in file-driven mode, so that it never opens the Admin API or
+# looks for etcd.
+deployment:
+  role: data_plane
+  role_data_plane:
+    config_provider: yaml
