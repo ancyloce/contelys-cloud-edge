@@ -1,32 +1,26 @@
 //go:build scenario
 
 // Package scenario holds Edge's verification scenarios (Edge detailed design, section 11). Each
-// scenario renders its own files, starts the image that the image target built, and drives Edge at
-// its listeners against stubs that run in this test process (Edge ADR 0002). testcontainers-go
-// removes the containers, also when a run crashes, and the keys of the throwaway certificate
-// authority live only in memory and in temporary directories outside the repository.
+// scenario renders its own files with the edge command, starts the image that the image target
+// built, and drives Edge at its listeners against stubs that run in this test process (Edge ADR
+// 0002). testcontainers-go removes the containers, also when a run crashes, and the keys of the
+// throwaway certificate authority live only in memory and in temporary directories outside the
+// repository.
 package scenario
 
 import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"io"
-	"math/big"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -34,108 +28,49 @@ import (
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/testcontainers/testcontainers-go"
-	tcexec "github.com/testcontainers/testcontainers-go/exec"
 	"github.com/testcontainers/testcontainers-go/wait"
 	"go.yaml.in/yaml/v3"
 
 	"github.com/contelys/contelys-cloud-edge/internal/application"
-	"github.com/contelys/contelys-cloud-edge/internal/infrastructure"
+	"github.com/contelys/contelys-cloud-edge/test/fixture"
 )
 
 const (
-	image               = "contelys/edge"
-	applicationHostname = "app.example.test"
-	edgeAddress         = "edge-1"
+	image       = "contelys/edge"
+	edgeAddress = "edge-1"
 	// The container reaches the stubs in this process through Docker's host gateway.
 	hostGateway = "host.docker.internal"
-
-	externalPort = "9443/tcp"
-	internalPort = "9444/tcp"
-	controlPort  = "9090/tcp"
 )
 
-// authority is the throwaway certificate authority of one scenario.
-type authority struct {
-	certificate *x509.Certificate
-	key         *ecdsa.PrivateKey
-	pem         []byte
-}
+// Edge's listeners, named by the container port that each listens on.
+const (
+	externalListener = "9443/tcp"
+	internalListener = "9444/tcp"
+	controlListener  = "9090/tcp"
+	// adminAPI is where APISIX's Admin API would listen; file-driven mode opens no listener there.
+	adminAPI = "9180/tcp"
+)
 
-func newAuthority(t *testing.T) *authority {
-	t.Helper()
-	key := generateKey(t)
-	template := &x509.Certificate{
-		SerialNumber:          serial(t),
-		Subject:               pkix.Name{CommonName: "Edge scenario certificate authority"},
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(24 * time.Hour),
-		IsCA:                  true,
-		BasicConstraintsValid: true,
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	certificate, err := x509.ParseCertificate(der)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return &authority{certificate: certificate, key: key, pem: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})}
-}
+// edgeCommand is the edge command, built once for the run, which renders every scenario's files
+// through its command line.
+var edgeCommand string
 
-// issue returns a certificate for one name, as PEM and as a tls.Certificate.
-func (a *authority) issue(t *testing.T, name string) (certificatePEM, keyPEM []byte, pair tls.Certificate) {
-	t.Helper()
-	key := generateKey(t)
-	template := &x509.Certificate{
-		SerialNumber: serial(t),
-		Subject:      pkix.Name{CommonName: name},
-		DNSNames:     []string{name},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(24 * time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, template, a.certificate, &key.PublicKey, a.key)
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "edge-scenario-")
 	if err != nil {
-		t.Fatal(err)
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
-	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
-	if err != nil {
-		t.Fatal(err)
+	edgeCommand = filepath.Join(dir, "edge")
+	build := exec.Command("go", "build", "-o", edgeCommand, "github.com/contelys/contelys-cloud-edge/cmd/edge")
+	build.Stdout, build.Stderr = os.Stderr, os.Stderr
+	if err := build.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "build the edge command:", err)
+		os.Exit(1)
 	}
-	certificatePEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
-	pair, err = tls.X509KeyPair(certificatePEM, keyPEM)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return certificatePEM, keyPEM, pair
-}
-
-func (a *authority) pool() *x509.CertPool {
-	pool := x509.NewCertPool()
-	pool.AddCert(a.certificate)
-	return pool
-}
-
-func generateKey(t *testing.T) *ecdsa.PrivateKey {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return key
-}
-
-func serial(t *testing.T) *big.Int {
-	t.Helper()
-	n, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 62))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return n
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
 }
 
 // The stub's answer, which a scenario expects to return to the client unchanged.
@@ -148,7 +83,7 @@ const (
 // name, and records each request byte for byte as it arrived after TLS, with the name that the
 // caller asked for in the TLS handshake.
 type stub struct {
-	slug string
+	slug application.Slug
 	port int
 
 	mu       sync.Mutex
@@ -171,9 +106,9 @@ func (r recordedRequest) parsed(t *testing.T) *http.Request {
 }
 
 // startStub starts a stub for the deployable slug that presents a certificate for certificateName.
-func startStub(t *testing.T, ca *authority, slug, certificateName string) *stub {
+func startStub(t *testing.T, ca *fixture.Authority, slug application.Slug, certificateName string) *stub {
 	t.Helper()
-	_, _, pair := ca.issue(t, certificateName)
+	_, _, pair := ca.Issue(t, certificateName)
 	listener, err := net.Listen("tcp", "0.0.0.0:0") // the container connects through the host gateway
 	if err != nil {
 		t.Fatal(err)
@@ -199,7 +134,7 @@ func (s *stub) answer(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.requests = append(s.requests, recordedRequest{raw: conn.take(), serverName: conn.ConnectionState().ServerName})
 	s.mu.Unlock()
-	w.Header().Set(stubHeader, s.slug)
+	w.Header().Set(stubHeader, string(s.slug))
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(stubStatus)
 	fmt.Fprintf(w, "answer of %s\n", s.slug)
@@ -250,83 +185,37 @@ func (c *recordingConn) take() []byte {
 
 // setup is the renderer's input for one scenario.
 type setup struct {
-	ca                    *authority
+	ca                    *fixture.Authority
 	stubs                 []*stub
-	fragments             map[string]string
+	fragments             map[application.Slug]string
 	loadBalancerAddresses []string
 }
 
-// render writes the inputs into a temporary directory and renders them with the renderer's use case.
-// It returns the directory that holds config.yaml and the instance's apisix.yaml.
+// render writes the inputs and renders them with the edge command. It returns the directory that
+// holds config.yaml and the instance's apisix.yaml.
 func (s setup) render(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	write := func(name string, content []byte) {
-		t.Helper()
-		path := filepath.Join(dir, name)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, content, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	instances := map[string][]application.Instance{application.EdgeSlug: {{Address: edgeAddress, Port: 9443, Weight: 1}}}
+	in := fixture.NewInputs(t, s.ca, edgeAddress)
+	instances := application.Instances{application.EdgeSlug: {{Address: edgeAddress, Port: 9443, Weight: 1}}}
 	for _, stub := range s.stubs {
 		instances[stub.slug] = []application.Instance{{Address: hostGateway, Port: stub.port, Weight: 1}}
 	}
-	write("instances.yaml", marshal(t, instances))
-	addresses := s.loadBalancerAddresses
-	if addresses == nil {
-		addresses = []string{}
-	}
-	write("installation.yaml", marshal(t, map[string]any{
-		"application_hostname":    applicationHostname,
-		"authentication_hostname": "auth.example.test",
-		"load_balancer_addresses": addresses,
-		"collector_addresses":     []string{},
-	}))
-	if err := os.MkdirAll(filepath.Join(dir, "fragments"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	in.Instances(t, instances)
+	in.Installation(t, s.loadBalancerAddresses...)
 	for slug, fragment := range s.fragments {
-		write(filepath.Join("fragments", slug, infrastructure.FragmentFile), []byte(fragment))
+		in.Fragment(t, string(slug), fragment)
 	}
-	certificate, key, _ := s.ca.issue(t, applicationHostname)
-	write(filepath.Join("secrets", infrastructure.ApplicationCertificateFile), certificate)
-	write(filepath.Join("secrets", infrastructure.ApplicationKeyFile), key)
-	write(filepath.Join("secrets", infrastructure.TrustStoreFile), s.ca.pem)
-
-	out := filepath.Join(dir, "out")
-	files := infrastructure.Files{}
-	err := application.Renderer{Source: files, Sink: files}.Render(application.Request{
-		Instances:    filepath.Join(dir, "instances.yaml"),
-		Installation: filepath.Join(dir, "installation.yaml"),
-		Fragments:    filepath.Join(dir, "fragments"),
-		Secrets:      filepath.Join(dir, "secrets"),
-		Revision:     "0123456789abcdef0123456789abcdef01234567",
-		Out:          out,
-	})
-	if err != nil {
-		t.Fatalf("render: %v", err)
+	out := filepath.Join(t.TempDir(), "out")
+	if output, err := exec.Command(edgeCommand, in.Args(out)...).CombinedOutput(); err != nil {
+		t.Fatalf("edge render: %v: %s", err, output)
 	}
 	return out
-}
-
-func marshal(t *testing.T, v any) []byte {
-	t.Helper()
-	content, err := yaml.Marshal(v)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return content
 }
 
 // edge is one running Edge instance.
 type edge struct {
 	container *testcontainers.DockerContainer
-	ca        *authority
+	ca        *fixture.Authority
 }
 
 // startEdge starts an Edge instance with the rendered files in out, mounted as a deployment mounts
@@ -334,15 +223,43 @@ type edge struct {
 // apisix.yaml, at /etc/edge/routes. A file renamed into that directory is applied without a restart.
 // The renderer writes apisix.yaml for its owner alone, and the deployment gives it to the user that
 // Edge runs as. Here the files are made readable for every user instead.
-func startEdge(t *testing.T, ca *authority, out string) *edge {
+func startEdge(t *testing.T, ca *fixture.Authority, out string) *edge {
+	t.Helper()
+	return startEdgeMounting(t, ca, out, directoryMount(out), controlAnswers(http.StatusOK))
+}
+
+// routesDirectory is where an Edge instance mounts the directory that holds its apisix.yaml.
+const routesDirectory = "/etc/edge/routes"
+
+// routesFile is the instance's apisix.yaml in the rendered output out.
+func routesFile(out string) string { return filepath.Join(out, edgeAddress, "apisix.yaml") }
+
+// directoryMount mounts the instance's directory, as a deployment does (Edge ADR 0003).
+func directoryMount(out string) string {
+	return filepath.Dir(routesFile(out)) + ":" + routesDirectory + ":ro"
+}
+
+// fileMount mounts the instance's apisix.yaml itself, the mount that Edge ADR 0003 rejects.
+func fileMount(out string) string {
+	return routesFile(out) + ":" + routesDirectory + "/apisix.yaml:ro"
+}
+
+// controlAnswers is ready when the control listener answers the list of loaded routes with status.
+func controlAnswers(status int) wait.Strategy {
+	return wait.ForHTTP("/v1/routes").WithPort(controlListener).WithStartupTimeout(60 * time.Second).
+		WithStatusCodeMatcher(func(got int) bool { return got == status })
+}
+
+// startEdgeMounting starts an Edge instance whose routes come in through the bind mount routesMount,
+// and waits until ready holds.
+func startEdgeMounting(t *testing.T, ca *fixture.Authority, out, routesMount string, ready wait.Strategy) *edge {
 	t.Helper()
 	trustStore := filepath.Join(t.TempDir(), "ca.crt")
-	if err := os.WriteFile(trustStore, ca.pem, 0o644); err != nil {
+	if err := os.WriteFile(trustStore, ca.PEM, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	routes := filepath.Join(out, edgeAddress)
 	for path, mode := range map[string]os.FileMode{
-		routes: 0o755, filepath.Join(routes, "apisix.yaml"): 0o644, filepath.Join(out, "config.yaml"): 0o644,
+		filepath.Dir(routesFile(out)): 0o755, routesFile(out): 0o644, filepath.Join(out, "config.yaml"): 0o644,
 	} {
 		if err := os.Chmod(path, mode); err != nil {
 			t.Fatal(err)
@@ -351,16 +268,16 @@ func startEdge(t *testing.T, ca *authority, out string) *edge {
 	c, err := testcontainers.GenericContainer(context.Background(), testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
 			Image:        image,
-			ExposedPorts: []string{externalPort, internalPort, controlPort},
+			ExposedPorts: []string{externalListener, internalListener, controlListener, adminAPI},
 			HostConfigModifier: func(hc *container.HostConfig) {
 				hc.ExtraHosts = append(hc.ExtraHosts, hostGateway+":host-gateway")
 				hc.Binds = append(hc.Binds,
 					filepath.Join(out, "config.yaml")+":/usr/local/apisix/conf/config.yaml:ro",
 					trustStore+":"+application.TrustStorePath+":ro",
-					routes+":/etc/edge/routes:ro",
+					routesMount,
 				)
 			},
-			WaitingFor: wait.ForHTTP("/v1/routes").WithPort(controlPort).WithStartupTimeout(60 * time.Second),
+			WaitingFor: ready,
 		},
 		Started: true,
 	})
@@ -371,93 +288,74 @@ func startEdge(t *testing.T, ca *authority, out string) *edge {
 	return &edge{container: c.(*testcontainers.DockerContainer), ca: ca}
 }
 
-func (e *edge) endpoint(t *testing.T, port string) string {
+// containerAddress is the container's own address on its Docker network.
+func (e *edge) containerAddress(t *testing.T) string {
 	t.Helper()
-	endpoint, err := e.container.PortEndpoint(context.Background(), port, "")
+	address, err := e.container.ContainerIP(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	return endpoint
+	return address
+}
+
+// address is where this test process reaches one of Edge's listeners.
+func (e *edge) address(t *testing.T, listener string) string {
+	t.Helper()
+	address, err := e.container.PortEndpoint(context.Background(), listener, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return address
 }
 
 // client sends requests for the application hostname to one TLS listener of Edge, and verifies
 // Edge's certificate against the scenario's certificate authority.
-func (e *edge) client(t *testing.T, port string) *http.Client {
+func (e *edge) client(t *testing.T, listener string) *http.Client {
 	t.Helper()
-	address := e.endpoint(t, port)
+	address := e.address(t, listener)
 	return &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
 				return (&net.Dialer{}).DialContext(ctx, network, address)
 			},
-			TLSClientConfig: &tls.Config{RootCAs: e.ca.pool(), ServerName: applicationHostname},
+			TLSClientConfig: &tls.Config{RootCAs: e.ca.Pool(), ServerName: fixture.ApplicationHostname},
 		},
 	}
 }
 
-func (e *edge) get(t *testing.T, port, path string, header http.Header) *http.Response {
+func (e *edge) get(t *testing.T, listener, path string, header http.Header) *http.Response {
 	t.Helper()
-	request, err := http.NewRequest(http.MethodGet, "https://"+applicationHostname+path, nil)
+	request, err := http.NewRequest(http.MethodGet, "https://"+fixture.ApplicationHostname+path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for name, values := range header {
 		request.Header[name] = values
 	}
-	response, err := e.client(t, port).Do(request)
+	response, err := e.client(t, listener).Do(request)
 	if err != nil {
-		t.Fatalf("GET %s on %s: %v", path, port, err)
+		t.Fatalf("GET %s on %s: %v", path, listener, err)
 	}
 	t.Cleanup(func() { response.Body.Close() })
 	return response
 }
 
-// exec runs a command in the container and returns its output.
-func (e *edge) exec(t *testing.T, command ...string) string {
+// control sends a request to the control listener, as the VM's probe does.
+func (e *edge) control(t *testing.T, path string) *http.Response {
 	t.Helper()
-	code, reader, err := e.container.Exec(context.Background(), command, tcexec.Multiplexed())
+	response, err := (&http.Client{Timeout: 10 * time.Second}).Get("http://" + e.address(t, controlListener) + path)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("GET %s on the control listener: %v", path, err)
 	}
-	output, err := io.ReadAll(reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if code != 0 {
-		t.Fatalf("%v exited with %d: %s", command, code, output)
-	}
-	return string(output)
-}
-
-// listeningPorts reads the TCP ports that something in the container listens on.
-func (e *edge) listeningPorts(t *testing.T) map[int]bool {
-	t.Helper()
-	ports := map[int]bool{}
-	for _, line := range strings.Split(e.exec(t, "cat", "/proc/net/tcp", "/proc/net/tcp6"), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 4 || fields[3] != "0A" { // 0A is LISTEN
-			continue
-		}
-		local := fields[1]
-		port, err := strconv.ParseInt(local[strings.LastIndex(local, ":")+1:], 16, 32)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ports[int(port)] = true
-	}
-	return ports
+	t.Cleanup(func() { response.Body.Close() })
+	return response
 }
 
 // loadedIDs reads the ids of the loaded routes or upstreams from the control listener.
 func (e *edge) loadedIDs(t *testing.T, kind string) []string {
 	t.Helper()
-	response, err := http.Get("http://" + e.endpoint(t, controlPort) + "/v1/" + kind)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
+	body, err := io.ReadAll(e.control(t, "/v1/"+kind).Body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -497,4 +395,13 @@ func renderedIDs(t *testing.T, out, kind string) []string {
 		ids = append(ids, item.ID)
 	}
 	return ids
+}
+
+func marshal(t *testing.T, v any) []byte {
+	t.Helper()
+	content, err := yaml.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return content
 }

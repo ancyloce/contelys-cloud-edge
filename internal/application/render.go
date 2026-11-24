@@ -32,7 +32,7 @@ func (r Renderer) Render(req Request) error {
 	if err != nil {
 		return err
 	}
-	out, err := Render(in)
+	out, err := render(in)
 	if err != nil {
 		return err
 	}
@@ -52,18 +52,17 @@ type InstanceOutput struct {
 	File    ApisixFile
 }
 
-// Render renders the inputs. The same inputs always give the same output.
-func Render(in Inputs) (Output, error) {
-	edges := in.Instances[EdgeSlug]
-	if len(edges) == 0 {
-		return Output{}, fmt.Errorf("the instances file lists no instance of %s", EdgeSlug)
+// render checks and renders the inputs. The same inputs always give the same output.
+func render(in Inputs) (Output, error) {
+	if err := check(in); err != nil {
+		return Output{}, err
 	}
 	file, err := renderApisix(in)
 	if err != nil {
 		return Output{}, err
 	}
 	out := Output{Config: renderConfig(in)}
-	for _, edge := range edges {
+	for _, edge := range in.Instances[EdgeSlug] {
 		out.Instances = append(out.Instances, InstanceOutput{Address: edge.Address, File: file})
 	}
 	return out, nil
@@ -98,12 +97,15 @@ func renderApisix(in Inputs) (ApisixFile, error) {
 }
 
 // externalRoute renders one route of a fragment on the external listener and the application
-// hostname. Its upstream is always the deployable that ships the fragment.
-func externalRoute(in Inputs, slug string, route FragmentRoute) (Route, error) {
+// hostname. Its upstream is always the deployable that ships the fragment. Its name, like its id,
+// carries its methods, because metrics are labelled by route name.
+func externalRoute(in Inputs, slug Slug, route FragmentRoute) (Route, error) {
 	auth := cmp.Or(route.Auth, AuthRequired)
 	traffic := cmp.Or(route.Traffic, TrafficAPI)
-	// A route is never rendered without the behaviour its fields promise: forward-auth arrives with
-	// ticket 09 and the WebSocket rules with ticket 12 of the Edge implementation plan.
+	// A route that needs authentication or is a WebSocket route is never rendered without the rules
+	// that keep it safe: forward-auth arrives with ticket 09 and the WebSocket rules with ticket 12 of
+	// the Edge implementation plan. Until tickets 16 and 18 render the limits, timeouts and sizes of
+	// the traffic classes, every route gets APISIX's own, whatever its class.
 	if auth != AuthAnonymous {
 		return Route{}, fmt.Errorf("auth %q is not rendered yet, because Edge has no forward-auth yet", auth)
 	}
@@ -111,13 +113,13 @@ func externalRoute(in Inputs, slug string, route FragmentRoute) (Route, error) {
 		return Route{}, fmt.Errorf("traffic %q is not rendered yet, because Edge has no WebSocket rules yet", traffic)
 	}
 	return Route{
-		ID:         routeID("external", slug, route.Paths),
-		Name:       slug + " " + strings.Join(route.Paths, " "),
+		ID:         routeID("external", slug, route.Paths, route.Methods),
+		Name:       string(slug) + " " + strings.Join(route.Methods, ",") + " " + strings.Join(route.Paths, " "),
 		Host:       in.Installation.ApplicationHostname,
 		URIs:       route.Paths,
 		Methods:    route.Methods,
 		Vars:       onListener(in.Defaults.Listeners.ExternalPort),
-		UpstreamID: slug,
+		UpstreamID: string(slug),
 		Plugins: map[string]any{
 			"response-rewrite": ResponseRewrite{Headers: ResponseHeaders{Set: map[string]string{
 				"Strict-Transport-Security": in.Defaults.StrictTransportSecurity,
@@ -128,18 +130,18 @@ func externalRoute(in Inputs, slug string, route FragmentRoute) (Route, error) {
 
 // upstream renders the upstream of one deployable. Edge sends the name derived from the slug as
 // Host and verifies the upstream's certificate against it, and never retries (section 06).
-func upstream(slug string, instances []Instance) Upstream {
+func upstream(slug Slug, instances []Instance) Upstream {
 	nodes := make([]Node, len(instances))
 	for i, instance := range instances {
 		nodes[i] = Node{Host: instance.Address, Port: instance.Port, Weight: instance.Weight}
 	}
 	return Upstream{
-		ID:           slug,
-		Name:         slug,
+		ID:           string(slug),
+		Name:         string(slug),
 		Type:         "roundrobin",
 		Scheme:       "https",
 		PassHost:     "rewrite",
-		UpstreamHost: slug,
+		UpstreamHost: string(slug),
 		TLS:          UpstreamTLS{Verify: true},
 		Retries:      0,
 		Nodes:        nodes,
@@ -152,11 +154,12 @@ func onListener(port int) [][]any {
 	return [][]any{{"server_port", "==", port}}
 }
 
-// routeID derives a route's id from its listener, the deployable's slug and its paths, so that the
-// id stays the same while the paths do. APISIX allows at most 64 characters of [a-zA-Z0-9._-].
-func routeID(listener, slug string, paths []string) string {
-	sorted := slices.Clone(paths)
-	slices.Sort(sorted)
-	sum := sha256.Sum256([]byte(strings.Join(sorted, "\n")))
-	return listener + "." + slug + "." + hex.EncodeToString(sum[:6])
+// routeID derives a route's id from its listener, the deployable's slug, its paths and its methods,
+// so that the id stays the same while they do, and two routes on the same paths with other methods
+// get their own ids. The hash reads the sorted paths and then the sorted methods, one per line; a
+// path starts with / and a method never does. APISIX allows at most 64 characters of [a-zA-Z0-9._-].
+func routeID(listener string, slug Slug, paths, methods []string) string {
+	sortedPaths, sortedMethods := slices.Sorted(slices.Values(paths)), slices.Sorted(slices.Values(methods))
+	sum := sha256.Sum256([]byte(strings.Join(slices.Concat(sortedPaths, sortedMethods), "\n")))
+	return listener + "." + string(slug) + "." + hex.EncodeToString(sum[:6])
 }

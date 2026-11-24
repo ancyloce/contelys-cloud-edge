@@ -19,5 +19,5 @@ func main() {
 // the command line.
 func run(args []string, stdout, stderr io.Writer) int {
 	files := infrastructure.Files{}
-	return commands.Run(args, stdout, stderr, application.Renderer{Source: files, Sink: files})
+	return commands.Run(args, stdout, stderr, application.Renderer{Source: files, Sink: files}.Render)
 }

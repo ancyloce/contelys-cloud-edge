@@ -3,6 +3,8 @@
 // configuration revision (Edge detailed design, section 03).
 package application
 
+import "regexp"
+
 // Request names the renderer's inputs and its output directory, as the command line gives them.
 type Request struct {
 	Instances    string
@@ -13,7 +15,9 @@ type Request struct {
 	Out          string
 }
 
-// Inputs is everything the renderer reads, already decoded and checked against its own format.
+// Inputs is everything the renderer reads, decoded from its files. The renderer checks the rules of
+// the application before it renders them. The configuration revision joins them with the route
+// that confirms it (ticket 08 of the Edge implementation plan).
 type Inputs struct {
 	Defaults     Defaults
 	Instances    Instances
@@ -21,15 +25,21 @@ type Inputs struct {
 	// Fragments are sorted by slug.
 	Fragments []Fragment
 	Secrets   Secrets
-	Revision  string
 }
 
+// Slug is a deployable's name in lower case with hyphens, such as organization-access.
+type Slug string
+
+var slugPattern = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`)
+
+func (s Slug) valid() bool { return slugPattern.MatchString(string(s)) }
+
 // Instances maps a deployable's slug, and keycloak, to its instances, in the order of the file.
-type Instances map[string][]Instance
+type Instances map[Slug][]Instance
 
 // EdgeSlug is Edge's own slug. Its instances in the instances file are the Edge instances that the
 // renderer writes an apisix.yaml for.
-const EdgeSlug = "edge"
+const EdgeSlug Slug = "edge"
 
 // Instance is one instance of a deployable. A weight of 1 serves and 0 drains.
 type Instance struct {
@@ -38,7 +48,9 @@ type Instance struct {
 	Weight  int    `yaml:"weight"`
 }
 
-// Installation holds the values of the installation as a whole.
+// Installation holds the values of the installation as a whole, in the form that section 03 of the
+// design gives the installation file. The authentication hostname and the collectors' addresses are
+// rendered from tickets 11 and 19 on, and are checked from the start.
 type Installation struct {
 	ApplicationHostname    string   `yaml:"application_hostname"`
 	AuthenticationHostname string   `yaml:"authentication_hostname"`
@@ -52,33 +64,39 @@ type Secrets struct {
 	ApplicationKey         string
 }
 
-// Fragment is the route fragment of one deployable.
+// Fragment is the route fragment of one deployable. Its slug is the name of its directory.
 type Fragment struct {
-	Slug   string
+	Slug   Slug
 	Routes []FragmentRoute
 }
 
 // FragmentRoute is one route of a fragment, with the four fields of the fragment schema. An empty
 // Auth or Traffic takes its default.
 type FragmentRoute struct {
-	Paths   []string `yaml:"paths"`
-	Methods []string `yaml:"methods"`
-	Auth    string   `yaml:"auth"`
-	Traffic string   `yaml:"traffic"`
+	Paths   []string     `yaml:"paths"`
+	Methods []string     `yaml:"methods"`
+	Auth    Auth         `yaml:"auth"`
+	Traffic TrafficClass `yaml:"traffic"`
 }
+
+// Auth says whether a route needs an authenticated caller.
+type Auth string
 
 // The values of a route's auth field.
 const (
-	AuthRequired  = "required"
-	AuthAnonymous = "anonymous"
+	AuthRequired  Auth = "required"
+	AuthAnonymous Auth = "anonymous"
 )
+
+// TrafficClass is a kind of traffic that shares one set of limits, timeouts and sizes (section 05).
+type TrafficClass string
 
 // The values of a route's traffic field.
 const (
-	TrafficAPI            = "api"
-	TrafficAuthentication = "authentication"
-	TrafficWebSocket      = "websocket"
-	TrafficTransfer       = "transfer"
+	TrafficAPI            TrafficClass = "api"
+	TrafficAuthentication TrafficClass = "authentication"
+	TrafficWebSocket      TrafficClass = "websocket"
+	TrafficTransfer       TrafficClass = "transfer"
 )
 
 // Defaults holds the values of the defaults file that the renderer uses so far. The file holds
