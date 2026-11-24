@@ -38,22 +38,24 @@ const (
 )
 
 // The limits of a trial load: how long the instance may take to start and answer, how long one
-// request to its control listener may take, how often it is asked, and how long the removal of the
-// container may take.
+// request to its control listener may take, how often it is asked, how long the removal of the
+// container may take, and how long reading its last log lines may take.
 const (
 	trialTimeout          = 60 * time.Second
 	controlRequestTimeout = 2 * time.Second
 	pollInterval          = 100 * time.Millisecond
 	removeTimeout         = 10 * time.Second
+	logsTimeout           = 10 * time.Second
 )
 
 // TrialLabel marks the containers of the trial load, so that an operator can find one that a
 // killed renderer left behind.
 const TrialLabel = "contelys.edge.trial-load"
 
-// Load implements application.Trial.
+// Load implements application.Trial. It encodes and checks the files as the sink does, so a file
+// that breaks a rule of its bytes fails with the same message, before any container starts.
 func (DockerTrial) Load(c application.Candidate) (application.Loaded, error) {
-	routes, err := encodeRouteFile("the candidate apisix.yaml", c.File)
+	routes, err := encodeRouteFile(routeFileName(c.Address), c.File)
 	if err != nil {
 		return application.Loaded{}, err
 	}
@@ -209,7 +211,7 @@ func loadedIDs(ctx context.Context, c *http.Client, url string) ([]string, error
 
 // logsOf returns the last lines that the container wrote, to explain why the trial load failed.
 func logsOf(docker *client.Client, id string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), removeTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), logsTimeout)
 	defer cancel()
 	stream, err := docker.ContainerLogs(ctx, id, client.ContainerLogsOptions{ShowStdout: true, ShowStderr: true, Tail: "20"})
 	if err != nil {
