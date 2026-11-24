@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Route fragment",
+  "description": "The external routes of one deployable, which Edge publishes on the application hostname (Edge detailed design, section 03). The upstream of every route is the deployable that ships the fragment.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["routes"],
+  "properties": {
+    "routes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["paths", "methods"],
+        "properties": {
+          "paths": {
+            "description": "Exact paths, or path prefixes that end in /*.",
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^/([A-Za-z0-9._~-]+/)*([A-Za-z0-9._~-]+|\\*)?$"
+            }
+          },
+          "methods": {
+            "description": "The HTTP methods allowed on those paths.",
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "enum": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+            }
+          },
+          "auth": {
+            "enum": ["required", "anonymous"],
+            "default": "required"
+          },
+          "traffic": {
+            "description": "The traffic class, which selects the limits, timeouts and sizes of section 05. websocket also marks a WebSocket route.",
+            "enum": ["api", "authentication", "websocket", "transfer"],
+            "default": "api"
+          }
+        }
+      }
+    }
+  }
+}
