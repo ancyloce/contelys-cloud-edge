@@ -13,39 +13,53 @@ import (
 	"time"
 
 	"go.yaml.in/yaml/v3"
+
+	"github.com/contelys/contelys-cloud-edge/internal/application"
+	"github.com/contelys/contelys-cloud-edge/test/fixture"
 )
 
 // These scenarios confirm on the test baseline what the design relies on from APISIX itself
 // (Edge detailed design, sections 03, 07 and 08). They repeat whenever the baseline moves.
 
-func TestThePinnedImageReportsItsVersionAndListensForNoAdminAPI(t *testing.T) {
+func TestThePinnedImageReportsItsVersionAndOpensNoAdminAPI(t *testing.T) {
 	t.Parallel()
-	ca := newAuthority(t)
+	ca := fixture.NewAuthority(t)
 	edge := startEdge(t, ca, setup{ca: ca}.render(t)) // an empty route file
 
-	version := lastLine(edge.exec(t, "apisix", "version"))
-	if version != "3.21.0" {
-		t.Errorf("version: got %q, want 3.21.0", version)
+	// APISIX names its version in the Server header of its answers.
+	server := edge.get(t, externalListener, "/no-route", nil).Header.Get("Server")
+	version, found := strings.CutPrefix(server, "APISIX/")
+	if !found || version != "3.21.0" {
+		t.Errorf("Server: got %q, want APISIX/3.21.0", server)
 	}
-	if !atLeast(t, version, "3.20.0") {
+	if found && !atLeast(t, version, "3.20.0") {
 		t.Errorf("version %s is below the floor of 3.20.0 (section 07)", version)
-	}
-	ports := edge.listeningPorts(t)
-	want := map[int]bool{9443: true, 9444: true, 9080: true, 9090: true}
-	if !mapsEqual(ports, want) {
-		t.Errorf("listening ports: got %v, want only the external, internal, loopback and control listeners %v", ports, want)
 	}
 	if ids := edge.loadedIDs(t, "routes"); len(ids) != 0 {
 		t.Errorf("the control listener reports routes %v for an empty route file", ids)
+	}
+
+	// Nothing answers where the Admin API would listen, and no listener serves its paths.
+	if response, err := (&http.Client{Timeout: 5 * time.Second}).Get("http://" + edge.address(t, adminAPI) + "/apisix/admin/routes"); err == nil {
+		response.Body.Close()
+		t.Errorf("something answered %d where the Admin API would listen", response.StatusCode)
+	}
+	for _, listener := range []string{externalListener, internalListener} {
+		if got := edge.get(t, listener, "/apisix/admin/routes", nil).StatusCode; got != http.StatusNotFound {
+			t.Errorf("/apisix/admin/routes on %s: got %d, want 404", listener, got)
+		}
+	}
+	if got := edge.control(t, "/apisix/admin/routes").StatusCode; got != http.StatusNotFound {
+		t.Errorf("/apisix/admin/routes on the control listener: got %d, want 404", got)
 	}
 }
 
 func TestEveryRenderedRouteAndUpstreamIsLoaded(t *testing.T) {
 	t.Parallel()
-	ca := newAuthority(t)
+	ca := fixture.NewAuthority(t)
 	projects := startStub(t, ca, "projects", "projects")
 	authoring := startStub(t, ca, "authoring", "authoring")
-	out := setup{ca: ca, stubs: []*stub{projects, authoring}, fragments: map[string]string{
+	out := setup{ca: ca, stubs: []*stub{projects, authoring}, fragments: map[application.Slug]string{
 		"projects": `
 routes:
   - {paths: [/api/v1/projects, /api/v1/projects/*], methods: [GET, POST], auth: anonymous}
@@ -67,10 +81,10 @@ routes:
 		}
 	}
 	// A more specific route wins over Authoring's remainder.
-	if got := edge.get(t, externalPort, "/api/v1/projects/7", nil).Header.Get(stubHeader); got != "projects" {
+	if got := edge.get(t, externalListener, "/api/v1/projects/7", nil).Header.Get(stubHeader); got != "projects" {
 		t.Errorf("/api/v1/projects/7 reached %q", got)
 	}
-	if got := edge.get(t, externalPort, "/editor/index.html", nil).Header.Get(stubHeader); got != "authoring" {
+	if got := edge.get(t, externalListener, "/editor/index.html", nil).Header.Get(stubHeader); got != "authoring" {
 		t.Errorf("/editor/index.html reached %q", got)
 	}
 }
@@ -78,40 +92,40 @@ routes:
 // Assumption A3 of the implementation plan.
 func TestARouteAnswersOnlyOnItsListenerAndARouteWithoutTheConditionOnEveryListener(t *testing.T) {
 	t.Parallel()
-	ca := newAuthority(t)
+	ca := fixture.NewAuthority(t)
 	projects := startStub(t, ca, "projects", "projects")
-	out := setup{ca: ca, stubs: []*stub{projects}, fragments: map[string]string{"projects": projectsFragment}}.render(t)
+	out := setup{ca: ca, stubs: []*stub{projects}, fragments: map[application.Slug]string{"projects": projectsFragment}}.render(t)
 	addRoute(t, out, map[string]any{"id": "without-condition", "uri": "/unbound", "upstream_id": "projects"})
 	edge := startEdge(t, ca, out)
 
 	for _, c := range []struct {
-		port, path string
-		want       int
+		listener, path string
+		want           int
 	}{
-		{externalPort, "/api/v1/projects", stubStatus},
-		{internalPort, "/api/v1/projects", http.StatusNotFound},
-		{externalPort, "/unbound", stubStatus},
-		{internalPort, "/unbound", stubStatus},
+		{externalListener, "/api/v1/projects", stubStatus},
+		{internalListener, "/api/v1/projects", http.StatusNotFound},
+		{externalListener, "/unbound", stubStatus},
+		{internalListener, "/unbound", stubStatus},
 	} {
-		if got := edge.get(t, c.port, c.path, nil).StatusCode; got != c.want {
-			t.Errorf("%s on %s: got %d, want %d", c.path, c.port, got, c.want)
+		if got := edge.get(t, c.listener, c.path, nil).StatusCode; got != c.want {
+			t.Errorf("%s on %s: got %d, want %d", c.path, c.listener, got, c.want)
 		}
 	}
 }
 
 func TestAFileRenamedIntoTheMountedDirectoryIsAppliedWithinThePollingInterval(t *testing.T) {
 	t.Parallel()
-	ca := newAuthority(t)
+	ca := fixture.NewAuthority(t)
 	projects := startStub(t, ca, "projects", "projects")
-	before := setup{ca: ca, stubs: []*stub{projects}, fragments: map[string]string{"projects": projectsFragment}}
+	before := setup{ca: ca, stubs: []*stub{projects}, fragments: map[application.Slug]string{"projects": projectsFragment}}
 	out := before.render(t)
 	edge := startEdge(t, ca, out)
-	if got := edge.get(t, externalPort, "/api/v1/archive", nil).StatusCode; got != http.StatusNotFound {
+	if got := edge.get(t, externalListener, "/api/v1/archive", nil).StatusCode; got != http.StatusNotFound {
 		t.Fatalf("/api/v1/archive before the change: got %d, want 404", got)
 	}
 
 	after := before
-	after.fragments = map[string]string{"projects": projectsFragment + `
+	after.fragments = map[application.Slug]string{"projects": projectsFragment + `
   - {paths: [/api/v1/archive], methods: [GET], auth: anonymous}
 `}
 	changed, err := os.ReadFile(filepath.Join(after.render(t), edgeAddress, "apisix.yaml"))
@@ -125,7 +139,7 @@ func TestAFileRenamedIntoTheMountedDirectoryIsAppliedWithinThePollingInterval(t 
 	renamed := time.Now()
 
 	for {
-		if edge.get(t, externalPort, "/api/v1/archive", nil).StatusCode == stubStatus {
+		if edge.get(t, externalListener, "/api/v1/archive", nil).StatusCode == stubStatus {
 			break
 		}
 		if time.Since(renamed) > 3*time.Second {
@@ -164,11 +178,6 @@ func renameIntoPlace(t *testing.T, path string, content []byte) {
 	}
 }
 
-func lastLine(output string) string {
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-	return strings.TrimSpace(lines[len(lines)-1])
-}
-
 // atLeast reports whether the dotted version is at least floor.
 func atLeast(t *testing.T, version, floor string) bool {
 	t.Helper()
@@ -184,16 +193,4 @@ func atLeast(t *testing.T, version, floor string) bool {
 		return parts
 	}
 	return slices.Compare(parse(version), parse(floor)) >= 0
-}
-
-func mapsEqual(a, b map[int]bool) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k := range a {
-		if !b[k] {
-			return false
-		}
-	}
-	return true
 }
