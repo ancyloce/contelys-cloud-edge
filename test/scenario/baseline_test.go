@@ -3,12 +3,16 @@
 package scenario
 
 import (
+	"bytes"
+	"errors"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -54,6 +58,70 @@ func TestThePinnedImageReportsItsVersionAndOpensNoAdminAPI(t *testing.T) {
 	}
 }
 
+// The loopback listener binds 127.0.0.1 inside the container, so from the network an instance
+// accepts connections on its external, internal and control listeners and on no other port.
+func TestFromTheNetworkAnInstanceAcceptsConnectionsOnlyOnItsListeners(t *testing.T) {
+	t.Parallel()
+	ca := fixture.NewAuthority(t)
+	edge := startEdge(t, ca, setup{ca: ca}.render(t))
+	// The scan dials the container's own address, which a Docker engine on Linux routes from the host.
+	address := edge.containerAddress(t)
+	if !accepts(address, portOf(externalListener)) {
+		t.Fatalf("the host cannot reach the container's address %s", address)
+	}
+
+	want := []int{portOf(controlListener), portOf(externalListener), portOf(internalListener)}
+	if open := openPorts(address); !slices.Equal(open, want) {
+		t.Errorf("ports that accept connections from the network: got %v, want %v", open, want)
+	}
+}
+
+// accepts reports whether port of address accepts a TCP connection within a second.
+func accepts(address string, port int) bool {
+	c, err := net.DialTimeout("tcp", net.JoinHostPort(address, strconv.Itoa(port)), time.Second)
+	if err == nil {
+		c.Close()
+	}
+	return err == nil
+}
+
+// openPorts dials every TCP port of address and returns, in order, those that accept a connection.
+func openPorts(address string) []int {
+	ports := make(chan int)
+	var (
+		mu   sync.Mutex
+		open []int
+		wg   sync.WaitGroup
+	)
+	for range 256 {
+		wg.Go(func() {
+			for port := range ports {
+				if accepts(address, port) {
+					mu.Lock()
+					open = append(open, port)
+					mu.Unlock()
+				}
+			}
+		})
+	}
+	for port := 1; port <= 65535; port++ {
+		ports <- port
+	}
+	close(ports)
+	wg.Wait()
+	slices.Sort(open)
+	return open
+}
+
+// portOf is the container port that a listener, such as "9443/tcp", listens on.
+func portOf(listener string) int {
+	port, err := strconv.Atoi(strings.TrimSuffix(listener, "/tcp"))
+	if err != nil {
+		panic(err)
+	}
+	return port
+}
+
 func TestEveryRenderedRouteAndUpstreamIsLoaded(t *testing.T) {
 	t.Parallel()
 	ca := fixture.NewAuthority(t)
@@ -92,11 +160,13 @@ routes:
 // Assumption A3 of the implementation plan.
 func TestARouteAnswersOnlyOnItsListenerAndARouteWithoutTheConditionOnEveryListener(t *testing.T) {
 	t.Parallel()
-	ca := fixture.NewAuthority(t)
-	projects := startStub(t, ca, "projects", "projects")
-	out := setup{ca: ca, stubs: []*stub{projects}, fragments: map[application.Slug]string{"projects": projectsFragment}}.render(t)
+	current := projectsOnly(t)
+	out := current.render(t)
 	addRoute(t, out, map[string]any{"id": "without-condition", "uri": "/unbound", "upstream_id": "projects"})
-	edge := startEdge(t, ca, out)
+	// The renderer writes the port as a number. The condition holds with a string too.
+	addRoute(t, out, map[string]any{"id": "port-as-string", "uri": "/port-as-string", "upstream_id": "projects",
+		"vars": [][]any{{"server_port", "==", strconv.Itoa(portOf(externalListener))}}})
+	edge := startEdge(t, current.ca, out)
 
 	for _, c := range []struct {
 		listener, path string
@@ -104,6 +174,8 @@ func TestARouteAnswersOnlyOnItsListenerAndARouteWithoutTheConditionOnEveryListen
 	}{
 		{externalListener, "/api/v1/projects", stubStatus},
 		{internalListener, "/api/v1/projects", http.StatusNotFound},
+		{externalListener, "/port-as-string", stubStatus},
+		{internalListener, "/port-as-string", http.StatusNotFound},
 		{externalListener, "/unbound", stubStatus},
 		{internalListener, "/unbound", stubStatus},
 	} {
@@ -113,47 +185,190 @@ func TestARouteAnswersOnlyOnItsListenerAndARouteWithoutTheConditionOnEveryListen
 	}
 }
 
-func TestAFileRenamedIntoTheMountedDirectoryIsAppliedWithinThePollingInterval(t *testing.T) {
-	t.Parallel()
-	ca := fixture.NewAuthority(t)
-	projects := startStub(t, ca, "projects", "projects")
-	before := setup{ca: ca, stubs: []*stub{projects}, fragments: map[application.Slug]string{"projects": projectsFragment}}
-	out := before.render(t)
-	edge := startEdge(t, ca, out)
-	if got := edge.get(t, externalListener, "/api/v1/archive", nil).StatusCode; got != http.StatusNotFound {
-		t.Fatalf("/api/v1/archive before the change: got %d, want 404", got)
-	}
+// Each APISIX worker process checks the modification time of apisix.yaml once per polling interval
+// and applies a changed file within a tenth of a second of reading it. The scenarios allow
+// applyMargin for that tenth and for the request that observes the change (section 03).
+const (
+	pollingInterval = time.Second
+	applyMargin     = 500 * time.Millisecond
+)
 
-	after := before
-	after.fragments = map[application.Slug]string{"projects": projectsFragment + `
+// The scenarios that change the route file add the route on archivePath to projectsFragment.
+const (
+	archivePath     = "/api/v1/archive"
+	archiveFragment = projectsFragment + `
   - {paths: [/api/v1/archive], methods: [GET], auth: anonymous}
-`}
-	changed, err := os.ReadFile(filepath.Join(after.render(t), edgeAddress, "apisix.yaml"))
+`
+)
+
+func TestAFileRenamedIntoTheMountedDirectoryIsAppliedWithinOnePollingInterval(t *testing.T) {
+	t.Parallel()
+	current := projectsOnly(t)
+	out := current.render(t)
+	edge := startEdge(t, current.ca, out)
+	edge.expectNotApplied(t, 0)
+
+	renameIntoPlace(t, routesFile(out), changedRoutes(t, current))
+	edge.expectApplied(t, time.Now())
+}
+
+// The reason for Edge ADR 0003.
+func TestAMountOfTheFileItselfNeverSeesARename(t *testing.T) {
+	t.Parallel()
+	current := projectsOnly(t)
+	out := current.render(t)
+	edge := startEdgeMounting(t, current.ca, out, fileMount(out), controlAnswers(http.StatusOK))
+
+	renameIntoPlace(t, routesFile(out), changedRoutes(t, current))
+	edge.expectNotApplied(t, 3*pollingInterval)
+}
+
+// APISIX uses the modification time as the version of every resource and starts each at version 0.
+// A copy from an archive without times gives a file this modification time. Until a file with
+// another time replaces it, the instance has no certificate, so the external listener fails every
+// TLS handshake, and the control listener cannot list the routes and fails with 500.
+func TestAnInstanceThatStartsWithAFileWhoseModificationTimeIsZeroNeverAppliesIt(t *testing.T) {
+	t.Parallel()
+	current := projectsOnly(t)
+	out := current.render(t)
+	if err := os.Chtimes(routesFile(out), time.Unix(0, 0), time.Unix(0, 0)); err != nil {
+		t.Fatal(err)
+	}
+	edge := startEdgeMounting(t, current.ca, out, directoryMount(out), controlAnswers(http.StatusInternalServerError))
+
+	for end := time.Now().Add(3 * pollingInterval); time.Now().Before(end); time.Sleep(250 * time.Millisecond) {
+		response, err := edge.client(t, externalListener).Get("https://" + fixture.ApplicationHostname + "/api/v1/projects")
+		if err == nil {
+			response.Body.Close()
+			t.Fatalf("/api/v1/projects answered %d: the file was applied", response.StatusCode)
+		}
+		// crypto/tls reports an alert that the server sent as a "remote error".
+		if received := new(net.OpError); !errors.As(err, &received) || received.Op != "remote error" {
+			t.Fatalf("/api/v1/projects: got %v, want a TLS alert from the external listener", err)
+		}
+	}
+	if got := edge.control(t, "/v1/routes").StatusCode; got != http.StatusInternalServerError {
+		t.Errorf("/v1/routes on the control listener: got %d, want 500", got)
+	}
+}
+
+func TestAFileThatCannotBeOpenedIsRetriedAtTheNextPoll(t *testing.T) {
+	t.Parallel()
+	current := projectsOnly(t)
+	out := current.render(t)
+	edge := startEdge(t, current.ca, out)
+
+	// The renderer's mode, before the deployment gives the file to the user that Edge runs as.
+	unreadable := writeBeside(t, routesFile(out), changedRoutes(t, current))
+	if err := os.Chmod(unreadable, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(unreadable, routesFile(out)); err != nil {
+		t.Fatal(err)
+	}
+	edge.expectNotApplied(t, 2*pollingInterval)
+
+	// A change of mode keeps the modification time, so only a retry applies the file.
+	if err := os.Chmod(routesFile(out), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	edge.expectApplied(t, time.Now())
+}
+
+func TestAFileWithoutTheEndMarkerIsRetriedAtTheNextPoll(t *testing.T) {
+	t.Parallel()
+	current := projectsOnly(t)
+	out := current.render(t)
+	edge := startEdge(t, current.ca, out)
+
+	changed := changedRoutes(t, current)
+	unfinished, found := bytes.CutSuffix(changed, []byte("#END\n"))
+	if !found {
+		t.Fatal("the rendered file does not end with #END")
+	}
+	renameIntoPlace(t, routesFile(out), unfinished)
+	edge.expectNotApplied(t, 2*pollingInterval)
+
+	// The finished file keeps the modification time of the unfinished one, so only a retry applies it.
+	info, err := os.Stat(routesFile(out))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// APISIX compares modification times in whole seconds, so the new file must not share the
-	// second of the current one (section 03).
-	time.Sleep(time.Second)
-	renameIntoPlace(t, filepath.Join(out, edgeAddress, "apisix.yaml"), changed)
-	renamed := time.Now()
-
-	for {
-		if edge.get(t, externalListener, "/api/v1/archive", nil).StatusCode == stubStatus {
-			break
-		}
-		if time.Since(renamed) > 3*time.Second {
-			t.Fatal("the renamed file was not applied within 3 s, three polling intervals")
-		}
-		time.Sleep(100 * time.Millisecond)
+	finished := writeBeside(t, routesFile(out), changed)
+	if err := os.Chtimes(finished, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
 	}
-	t.Logf("applied %v after the rename", time.Since(renamed).Round(100*time.Millisecond))
+	if err := os.Rename(finished, routesFile(out)); err != nil {
+		t.Fatal(err)
+	}
+	edge.expectApplied(t, time.Now())
+}
+
+// expectApplied fails unless the route on archivePath answers within one polling interval and
+// applyMargin of since. Each worker process applies the file on its own, so once that time has
+// passed it also expects the route on new connections, which nginx spreads over its workers.
+func (e *edge) expectApplied(t *testing.T, since time.Time) {
+	t.Helper()
+	deadline := since.Add(pollingInterval + applyMargin)
+	for e.get(t, externalListener, archivePath, nil).StatusCode != stubStatus {
+		if time.Now().After(deadline) {
+			t.Fatalf("the change was not applied within %v", pollingInterval+applyMargin)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	first := time.Since(since)
+	time.Sleep(time.Until(deadline))
+	for i := range 8 {
+		if got := e.get(t, externalListener, archivePath, nil).StatusCode; got != stubStatus {
+			t.Fatalf("%s on connection %d after %v: got %d", archivePath, i+1, pollingInterval+applyMargin, got)
+		}
+	}
+	t.Logf("applied %v after the change", first.Round(10*time.Millisecond))
+}
+
+// expectNotApplied fails if, at any time within d, the route on archivePath answers or the current
+// routes stop answering. A d of 0 checks once.
+func (e *edge) expectNotApplied(t *testing.T, d time.Duration) {
+	t.Helper()
+	for end := time.Now().Add(d); ; time.Sleep(250 * time.Millisecond) {
+		if got := e.get(t, externalListener, archivePath, nil).StatusCode; got != http.StatusNotFound {
+			t.Fatalf("%s answered %d: the change was applied", archivePath, got)
+		}
+		if got := e.get(t, externalListener, "/api/v1/projects", nil).StatusCode; got != stubStatus {
+			t.Fatalf("/api/v1/projects answered %d: the current routes were dropped", got)
+		}
+		if !time.Now().Before(end) {
+			return
+		}
+	}
+}
+
+// changedRoutes renders the scenario's inputs with archiveFragment instead of its fragments, and
+// returns the new apisix.yaml. APISIX compares modification times in whole seconds, so it then
+// waits a second, so that the changed file does not share the second of the current one.
+func changedRoutes(t *testing.T, s setup) []byte {
+	t.Helper()
+	s.fragments = map[application.Slug]string{"projects": archiveFragment}
+	content, err := os.ReadFile(routesFile(s.render(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Second)
+	return content
+}
+
+// projectsOnly is a scenario's input with one deployable, projects, its stub and projectsFragment.
+func projectsOnly(t *testing.T) setup {
+	t.Helper()
+	ca := fixture.NewAuthority(t)
+	return setup{ca: ca, stubs: []*stub{startStub(t, ca, "projects", "projects")},
+		fragments: map[application.Slug]string{"projects": projectsFragment}}
 }
 
 // addRoute appends a hand-written route to the rendered apisix.yaml.
 func addRoute(t *testing.T, out string, route map[string]any) {
 	t.Helper()
-	path := filepath.Join(out, edgeAddress, "apisix.yaml")
+	path := routesFile(out)
 	content, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -169,13 +384,20 @@ func addRoute(t *testing.T, out string, route map[string]any) {
 // renameIntoPlace writes content beside path and renames it into place, as a deployment does.
 func renameIntoPlace(t *testing.T, path string, content []byte) {
 	t.Helper()
+	if err := os.Rename(writeBeside(t, path, content), path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeBeside writes content into a new file in the directory of path, readable for every user, and
+// returns the new file's path.
+func writeBeside(t *testing.T, path string, content []byte) string {
+	t.Helper()
 	temporary := filepath.Join(filepath.Dir(path), ".apisix.yaml.new")
 	if err := os.WriteFile(temporary, content, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Rename(temporary, path); err != nil {
-		t.Fatal(err)
-	}
+	return temporary
 }
 
 // atLeast reports whether the dotted version is at least floor.

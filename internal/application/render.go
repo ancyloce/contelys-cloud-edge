@@ -97,13 +97,15 @@ func renderApisix(in Inputs) (ApisixFile, error) {
 }
 
 // externalRoute renders one route of a fragment on the external listener and the application
-// hostname. Its upstream is always the deployable that ships the fragment.
+// hostname. Its upstream is always the deployable that ships the fragment. Its name, like its id,
+// carries its methods, because metrics are labelled by route name.
 func externalRoute(in Inputs, slug Slug, route FragmentRoute) (Route, error) {
 	auth := cmp.Or(route.Auth, AuthRequired)
 	traffic := cmp.Or(route.Traffic, TrafficAPI)
 	// A route that needs authentication or is a WebSocket route is never rendered without the rules
 	// that keep it safe: forward-auth arrives with ticket 09 and the WebSocket rules with ticket 12 of
-	// the Edge implementation plan. The values of the traffic classes arrive with ticket 16.
+	// the Edge implementation plan. Until tickets 16 and 18 render the limits, timeouts and sizes of
+	// the traffic classes, every route gets APISIX's own, whatever its class.
 	if auth != AuthAnonymous {
 		return Route{}, fmt.Errorf("auth %q is not rendered yet, because Edge has no forward-auth yet", auth)
 	}
@@ -111,8 +113,8 @@ func externalRoute(in Inputs, slug Slug, route FragmentRoute) (Route, error) {
 		return Route{}, fmt.Errorf("traffic %q is not rendered yet, because Edge has no WebSocket rules yet", traffic)
 	}
 	return Route{
-		ID:         routeID("external", slug, route.Paths),
-		Name:       string(slug) + " " + strings.Join(route.Paths, " "),
+		ID:         routeID("external", slug, route.Paths, route.Methods),
+		Name:       string(slug) + " " + strings.Join(route.Methods, ",") + " " + strings.Join(route.Paths, " "),
 		Host:       in.Installation.ApplicationHostname,
 		URIs:       route.Paths,
 		Methods:    route.Methods,
@@ -152,11 +154,12 @@ func onListener(port int) [][]any {
 	return [][]any{{"server_port", "==", port}}
 }
 
-// routeID derives a route's id from its listener, the deployable's slug and its paths, so that the
-// id stays the same while the paths do. APISIX allows at most 64 characters of [a-zA-Z0-9._-].
-func routeID(listener string, slug Slug, paths []string) string {
-	sorted := slices.Clone(paths)
-	slices.Sort(sorted)
-	sum := sha256.Sum256([]byte(strings.Join(sorted, "\n")))
+// routeID derives a route's id from its listener, the deployable's slug, its paths and its methods,
+// so that the id stays the same while they do, and two routes on the same paths with other methods
+// get their own ids. The hash reads the sorted paths and then the sorted methods, one per line; a
+// path starts with / and a method never does. APISIX allows at most 64 characters of [a-zA-Z0-9._-].
+func routeID(listener string, slug Slug, paths, methods []string) string {
+	sortedPaths, sortedMethods := slices.Sorted(slices.Values(paths)), slices.Sorted(slices.Values(methods))
+	sum := sha256.Sum256([]byte(strings.Join(slices.Concat(sortedPaths, sortedMethods), "\n")))
 	return listener + "." + string(slug) + "." + hex.EncodeToString(sum[:6])
 }

@@ -11,8 +11,10 @@ const TrustStorePath = "/etc/edge/ca.crt"
 
 // The listeners bind these addresses inside the container. The loopback listener carries Edge's call
 // to its own loopback route, so it stays on 127.0.0.1. The control listener binds every address of
-// the container, and the deployment publishes its port on the VM's loopback address only, so that the
-// VM's liveness probe and the comparison of loaded ids reach it and the network does not.
+// the container, because a published port reaches only a listener on the container's own address. The
+// deployment publishes its port on the VM's loopback address only and keeps other containers off
+// Edge's networks, so that the VM's liveness probe and the comparison of loaded ids reach it and
+// neither the network nor another container does (tickets 06 and 23).
 const (
 	loopbackAddress = "127.0.0.1"
 	controlAddress  = "0.0.0.0"

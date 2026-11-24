@@ -225,13 +225,41 @@ type edge struct {
 // Edge runs as. Here the files are made readable for every user instead.
 func startEdge(t *testing.T, ca *fixture.Authority, out string) *edge {
 	t.Helper()
+	return startEdgeMounting(t, ca, out, directoryMount(out), controlAnswers(http.StatusOK))
+}
+
+// routesDirectory is where an Edge instance mounts the directory that holds its apisix.yaml.
+const routesDirectory = "/etc/edge/routes"
+
+// routesFile is the instance's apisix.yaml in the rendered output out.
+func routesFile(out string) string { return filepath.Join(out, edgeAddress, "apisix.yaml") }
+
+// directoryMount mounts the instance's directory, as a deployment does (Edge ADR 0003).
+func directoryMount(out string) string {
+	return filepath.Dir(routesFile(out)) + ":" + routesDirectory + ":ro"
+}
+
+// fileMount mounts the instance's apisix.yaml itself, the mount that Edge ADR 0003 rejects.
+func fileMount(out string) string {
+	return routesFile(out) + ":" + routesDirectory + "/apisix.yaml:ro"
+}
+
+// controlAnswers is ready when the control listener answers the list of loaded routes with status.
+func controlAnswers(status int) wait.Strategy {
+	return wait.ForHTTP("/v1/routes").WithPort(controlListener).WithStartupTimeout(60 * time.Second).
+		WithStatusCodeMatcher(func(got int) bool { return got == status })
+}
+
+// startEdgeMounting starts an Edge instance whose routes come in through the bind mount routesMount,
+// and waits until ready holds.
+func startEdgeMounting(t *testing.T, ca *fixture.Authority, out, routesMount string, ready wait.Strategy) *edge {
+	t.Helper()
 	trustStore := filepath.Join(t.TempDir(), "ca.crt")
 	if err := os.WriteFile(trustStore, ca.PEM, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	routes := filepath.Join(out, edgeAddress)
 	for path, mode := range map[string]os.FileMode{
-		routes: 0o755, filepath.Join(routes, "apisix.yaml"): 0o644, filepath.Join(out, "config.yaml"): 0o644,
+		filepath.Dir(routesFile(out)): 0o755, routesFile(out): 0o644, filepath.Join(out, "config.yaml"): 0o644,
 	} {
 		if err := os.Chmod(path, mode); err != nil {
 			t.Fatal(err)
@@ -246,10 +274,10 @@ func startEdge(t *testing.T, ca *fixture.Authority, out string) *edge {
 				hc.Binds = append(hc.Binds,
 					filepath.Join(out, "config.yaml")+":/usr/local/apisix/conf/config.yaml:ro",
 					trustStore+":"+application.TrustStorePath+":ro",
-					routes+":/etc/edge/routes:ro",
+					routesMount,
 				)
 			},
-			WaitingFor: wait.ForHTTP("/v1/routes").WithPort(controlListener).WithStartupTimeout(60 * time.Second),
+			WaitingFor: ready,
 		},
 		Started: true,
 	})
@@ -258,6 +286,16 @@ func startEdge(t *testing.T, ca *fixture.Authority, out string) *edge {
 		t.Fatalf("start Edge: %v", err)
 	}
 	return &edge{container: c.(*testcontainers.DockerContainer), ca: ca}
+}
+
+// containerAddress is the container's own address on its Docker network.
+func (e *edge) containerAddress(t *testing.T) string {
+	t.Helper()
+	address, err := e.container.ContainerIP(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return address
 }
 
 // address is where this test process reaches one of Edge's listeners.

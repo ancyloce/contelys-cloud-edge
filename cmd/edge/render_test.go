@@ -49,8 +49,8 @@ routes:
 	file := renderOK(t, in).apisix(t, edgeAddress)
 
 	route := file.routeWithURIs(t, "/api/v1/projects", "/api/v1/projects/*")
-	equal(t, "id", route["id"], "external.projects.091407e11f0b")
-	equal(t, "name", route["name"], "projects /api/v1/projects /api/v1/projects/*")
+	equal(t, "id", route["id"], "external.projects.ff92e7c5e18a")
+	equal(t, "name", route["name"], "projects GET,HEAD /api/v1/projects /api/v1/projects/*")
 	equal(t, "host", route["host"], fixture.ApplicationHostname)
 	equal(t, "methods", route["methods"], []any{"GET", "HEAD"})
 	equal(t, "listener condition", route["vars"], []any{[]any{"server_port", "==", externalListenerPort}})
@@ -66,6 +66,27 @@ routes:
 	equal(t, "upstream_host", upstream["upstream_host"], "projects")
 	equal(t, "tls", upstream["tls"], map[string]any{"verify": true})
 	equal(t, "retries", upstream["retries"], 0)
+}
+
+func TestRoutesOnTheSamePathsWithOtherMethodsGetTheirOwnIds(t *testing.T) {
+	in := newInputs(t)
+	in.Fragment(t, "projects", `
+routes:
+  - {paths: [/api/v1/projects], methods: [GET], auth: anonymous}
+  - {paths: [/api/v1/projects], methods: [POST, DELETE], auth: anonymous}
+`)
+
+	var ids, names []any
+	for _, route := range renderOK(t, in).apisix(t, edgeAddress).items(t, "routes") {
+		ids = append(ids, route["id"])
+		names = append(names, route["name"])
+	}
+
+	// The first 12 hexadecimal digits of the SHA-256 of the sorted paths and then the sorted methods,
+	// one per line.
+	equal(t, "ids", ids, []any{"external.projects.cec1c806d8c4", "external.projects.0d8dcad58eaf"})
+	// Metrics are labelled by route name, so the names differ too.
+	equal(t, "names", names, []any{"projects GET /api/v1/projects", "projects POST,DELETE /api/v1/projects"})
 }
 
 func TestTheSameInputsGiveByteIdenticalFiles(t *testing.T) {
