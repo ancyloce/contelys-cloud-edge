@@ -29,6 +29,8 @@ const (
 	ApplicationHostname    = "app.example.test"
 	AuthenticationHostname = "auth.example.test"
 	Revision               = "0123456789abcdef0123456789abcdef01234567"
+	// Image is the image that the image target builds, which the scenarios and the trial load start.
+	Image = "contelys/edge"
 )
 
 // Authority is a throwaway certificate authority.
@@ -124,15 +126,18 @@ type Inputs struct {
 }
 
 // NewInputs writes a complete set of inputs into a temporary directory: an instances file with one
-// Edge instance at edgeAddress, an installation file without load-balancer addresses, an empty
-// fragments directory, and the application hostname's certificate and the trust store, both from ca.
+// Edge instance at edgeAddress, an installation file without load-balancer addresses, empty
+// directories of fragments and of contracts, and the application hostname's certificate and the
+// trust store, both from ca.
 func NewInputs(t testing.TB, ca *Authority, edgeAddress string) *Inputs {
 	t.Helper()
 	in := &Inputs{Dir: t.TempDir()}
 	in.Instances(t, application.Instances{application.EdgeSlug: {{Address: edgeAddress, Port: 9443, Weight: 1}}})
 	in.Installation(t)
-	if err := os.MkdirAll(filepath.Join(in.Dir, "fragments"), 0o755); err != nil {
-		t.Fatal(err)
+	for _, dir := range []string{"fragments", "contracts"} {
+		if err := os.MkdirAll(filepath.Join(in.Dir, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	certificate, key, _ := ca.Issue(t, ApplicationHostname)
 	in.Write(t, filepath.Join("secrets", infrastructure.ApplicationCertificateFile), string(certificate))
@@ -194,14 +199,35 @@ func (in *Inputs) Fragment(t testing.TB, slug, content string) {
 	in.Write(t, filepath.Join("fragments", slug, infrastructure.FragmentFile), content)
 }
 
+// Contract writes the OpenAPI contract of the deployable slug, with the given path templates, such
+// as /api/v1/projects/{projectId}, each with one operation.
+func (in *Inputs) Contract(t testing.TB, slug string, paths ...string) {
+	t.Helper()
+	operations := map[string]any{}
+	for _, path := range paths {
+		operations[path] = map[string]any{"get": map[string]any{"responses": map[string]any{"200": map[string]any{"description": "OK"}}}}
+	}
+	content, err := yaml.Marshal(map[string]any{
+		"openapi": "3.1.0",
+		"info":    map[string]any{"title": slug, "version": "1.0.0"},
+		"paths":   operations,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.Write(t, filepath.Join("contracts", slug, "openapi.yaml"), string(content))
+}
+
 // Request names these inputs, with out as the output directory.
 func (in *Inputs) Request(out string) application.Request {
 	return application.Request{
 		Instances:    filepath.Join(in.Dir, "instances.yaml"),
 		Installation: filepath.Join(in.Dir, "installation.yaml"),
 		Fragments:    filepath.Join(in.Dir, "fragments"),
+		Contracts:    filepath.Join(in.Dir, "contracts"),
 		Secrets:      filepath.Join(in.Dir, "secrets"),
 		Revision:     Revision,
+		Image:        Image,
 		Out:          out,
 	}
 }
@@ -213,8 +239,10 @@ func (in *Inputs) Args(out string) []string {
 		"--instances", req.Instances,
 		"--installation", req.Installation,
 		"--fragments", req.Fragments,
+		"--contracts", req.Contracts,
 		"--secrets", req.Secrets,
 		"--revision", req.Revision,
+		"--image", req.Image,
 		"--out", req.Out,
 	}
 }
