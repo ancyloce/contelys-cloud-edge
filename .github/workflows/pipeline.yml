@@ -1,0 +1,100 @@
+# Edge's pipeline (repository layout standard, Independence rule 4). Every run checks Edge inside the
+# parent repository, with its submodules and Edge's submodule at the commit under test. A version is
+# cut by hand: run this workflow on main with the version, and it builds the image once, pushes it,
+# and tags the commit.
+name: pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The version to cut, as <major>.<minor>.<patch>
+        required: true
+
+jobs:
+  check:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      # Every repository is public, so the checkout needs no credential. Until they are private,
+      # the GitHub Apps of rule 8 under "Submodules" are not needed.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.repository_owner }}/contelys-cloud
+          submodules: true
+          persist-credentials: false
+      - name: Edge at the commit under test
+        run: |
+          git -C platform/edge fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C platform/edge checkout --detach FETCH_HEAD
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: platform/edge/go.mod
+          cache-dependency-path: platform/edge/go.sum
+      - name: Checks
+        run: bash platform/edge/.github/scripts/verify.sh
+
+  release:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    concurrency: release
+    permissions:
+      contents: write
+      packages: write
+    env:
+      VERSION: ${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: The version is new and cut from main
+        run: |
+          [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "::error::$VERSION is not <major>.<minor>.<patch>"; exit 1; }
+          [ "$GITHUB_REF" = refs/heads/main ] || { echo "::error::a version is cut from main"; exit 1; }
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" --silent 2>/dev/null; then
+            echo "::error::v$VERSION exists already"; exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.repository_owner }}/contelys-cloud
+          submodules: true
+          persist-credentials: false
+      - name: Edge at the commit under test
+        run: |
+          git -C platform/edge fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C platform/edge checkout --detach FETCH_HEAD
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: platform/edge/go.mod
+          cache-dependency-path: platform/edge/go.sum
+      - name: Checks
+        run: bash platform/edge/.github/scripts/verify.sh
+      # The image that the checks built and scanned is the version's image. Until the organization
+      # exists, it goes to the registry of the account that holds the repositories (D2), and the
+      # version manifest pins it by digest, which a later copy to the final registry keeps.
+      - name: Push the image and tag the commit
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/edge:v$VERSION"
+          echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker tag contelys/edge "$image"
+          docker push "$image"
+          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$image")
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/v$VERSION" -f "sha=$GITHUB_SHA" --silent
+          {
+            echo "### Edge v$VERSION"
+            echo
+            echo "Image: \`$digest\`"
+            echo
+            echo "For the version manifest: \`edge: {version: $VERSION, digest: ${digest#*@}}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
