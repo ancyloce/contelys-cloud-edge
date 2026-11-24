@@ -19,8 +19,8 @@ const (
 
 const usage = "usage: edge render --instances <file> --installation <file> --fragments <dir> --secrets <dir> --revision <commit> --out <dir>"
 
-// Run runs one command and returns its exit code.
-func Run(args []string, stdout, stderr io.Writer, renderer application.Renderer) int {
+// Run runs one command and returns its exit code. render is the use case behind edge render.
+func Run(args []string, stdout, stderr io.Writer, render func(application.Request) error) int {
 	if len(args) == 0 || args[0] != "render" {
 		fmt.Fprintln(stderr, usage)
 		return Failed
@@ -50,7 +50,7 @@ func Run(args []string, stdout, stderr io.Writer, renderer application.Renderer)
 		return Failed
 	}
 
-	err := renderer.Render(req)
+	err := render(req)
 	var refusal *application.Refusal
 	switch {
 	case err == nil:
