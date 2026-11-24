@@ -1,5 +1,5 @@
 # Edge's defaults: every value that the renderer needs (Edge detailed design, section 05).
-# Ticket 03 of the Edge implementation plan set them on 2026-11-23, and the renderer embeds this
+# Ticket 03 of Edge's plan set them on 2026-11-23, and the renderer embeds this
 # file (Edge ADR 0002). Every value is provisional: production values come from measuring tail
 # latency, false rejections, peak concurrency and resource use (section 05).
 status: provisional
