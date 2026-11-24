@@ -34,9 +34,9 @@ func checkRendered(file ApisixFile, listeners Listeners) error {
 		name string
 		ids  []string
 	}{
-		{"routes", ids(file.Routes, func(r Route) string { return r.ID })},
-		{"upstreams", ids(file.Upstreams, func(u Upstream) string { return u.ID })},
-		{"ssls", ids(file.SSLs, func(s SSL) string { return s.ID })},
+		{"routes", file.routeIDs()},
+		{"upstreams", file.upstreamIDs()},
+		{"ssls", file.sslIDs()},
 	} {
 		for i, id := range kind.ids {
 			if earlier := slices.Index(kind.ids[:i], id); earlier >= 0 {
@@ -45,14 +45,6 @@ func checkRendered(file ApisixFile, listeners Listeners) error {
 		}
 	}
 	return nil
-}
-
-func ids[T any](items []T, id func(T) string) []string {
-	list := make([]string, len(items))
-	for i, item := range items {
-		list[i] = id(item)
-	}
-	return list
 }
 
 // boundToListener reports whether vars hold the condition of onListener for the port of the

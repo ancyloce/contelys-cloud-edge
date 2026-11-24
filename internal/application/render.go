@@ -123,7 +123,7 @@ func externalRoute(in Inputs, slug Slug, route FragmentRoute) (Route, error) {
 		return Route{}, fmt.Errorf("traffic %q is not rendered yet, because Edge has no WebSocket rules yet", traffic)
 	}
 	return Route{
-		ID:         routeID(externalListener, slug, route.Paths, route.Methods),
+		ID:         fragmentRouteID(slug, route),
 		Name:       string(slug) + " " + strings.Join(route.Methods, ",") + " " + strings.Join(route.Paths, " "),
 		Host:       in.Installation.ApplicationHostname,
 		URIs:       route.Paths,
@@ -158,9 +158,10 @@ func upstream(slug Slug, instances []Instance) Upstream {
 	}
 }
 
-// externalListener names the external listener in the ids of the routes on it, which are the routes
-// of the fragments.
-const externalListener = "external"
+// fragmentRouteID is the id of a fragment's route, which the external listener carries.
+func fragmentRouteID(slug Slug, route FragmentRoute) string {
+	return routeID("external", slug, route.Paths, route.Methods)
+}
 
 // onListener is the condition that binds a route to one listener. A route without it answers on
 // every listener.

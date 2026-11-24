@@ -304,7 +304,17 @@ func TestEachRuleRefusesItsFixtureAndNothingIsWritten(t *testing.T) {
 		}, true, "fragment projects: route 1: /api/v1/projects/42/members/7 is not a path of the deployable's OpenAPI contract"},
 		{"a prefix that covers no path of the contract", func(in *application.Inputs) {
 			in.Fragments[0].Routes[0].Paths = []string{"/api/v1/projects/42/members/*"}
-		}, true, "fragment projects: route 1: /api/v1/projects/42/members/* is not a path of the deployable's OpenAPI contract"},
+		}, true, "fragment projects: route 1: /api/v1/projects/42/members/* stands for no parameter of a path of the deployable's OpenAPI contract"},
+		{"a prefix over a literal segment of the contract's paths", func(in *application.Inputs) {
+			in.Fragments[0].Routes[0].Paths = []string{"/api/v1/*"}
+		}, true, "fragment projects: route 1: /api/v1/* stands for no parameter of a path of the deployable's OpenAPI contract"},
+		{"a path of a domain service outside /api/", func(in *application.Inputs) {
+			in.Contracts["projects"] = append(in.Contracts["projects"], "/editor/projects")
+			in.Fragments[0].Routes[0].Paths = []string{"/editor/projects"}
+		}, true, "fragment projects: route 1: /editor/projects lies outside /api/, where the API lives, and only Authoring's fragment claims paths outside it"},
+		{"a path of Authoring under /api/", func(in *application.Inputs) {
+			withFragment(in, "authoring", nil, anonymous([]string{"/*", "/api/v1/editor/*"}, "GET"))
+		}, true, "fragment authoring: route 1: /api/v1/editor/* lies under /api/, which the API reserves"},
 		{"a deployable without a contract", func(in *application.Inputs) {
 			delete(in.Contracts, "projects")
 		}, true, "fragment projects: the deployable has no OpenAPI contract"},

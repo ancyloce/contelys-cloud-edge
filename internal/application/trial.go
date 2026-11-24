@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
-	"strings"
 )
 
 // Trial loads candidate files into a throwaway instance of Edge's image and reports what that
@@ -17,9 +16,11 @@ type Trial interface {
 }
 
 // Candidate is what the trial load starts its instance with: Edge's image, and the files that an
-// instance of the installation mounts.
+// instance of the installation mounts. Address is the first Edge instance whose apisix.yaml File
+// is, which names the file in a failure.
 type Candidate struct {
 	Image      string
+	Address    string
 	File       ApisixFile
 	Config     ConfigFile
 	TrustStore string
@@ -40,7 +41,9 @@ func trialLoad(trial Trial, image string, in Inputs, out Output) error {
 		if slices.ContainsFunc(loaded, func(file ApisixFile) bool { return reflect.DeepEqual(file, instance.File) }) {
 			continue
 		}
-		report, err := trial.Load(Candidate{Image: image, File: instance.File, Config: out.Config, TrustStore: in.Secrets.TrustStore})
+		report, err := trial.Load(Candidate{
+			Image: image, Address: instance.Address, File: instance.File, Config: out.Config, TrustStore: in.Secrets.TrustStore,
+		})
 		if err != nil {
 			return err
 		}
@@ -56,15 +59,19 @@ func trialLoad(trial Trial, image string, in Inputs, out Output) error {
 // of a fragment that it did not load is a refusal of that fragment. Any other difference is an
 // error, because no fragment caused it: an upstream's instances come from the instances file.
 func compareLoaded(file ApisixFile, loaded Loaded, fragments []Fragment) error {
+	fragmentOf := map[string]Slug{}
+	for _, fragment := range fragments {
+		for _, route := range fragment.Routes {
+			fragmentOf[fragmentRouteID(fragment.Slug, route)] = fragment.Slug
+		}
+	}
 	for _, route := range file.Routes {
 		if slices.Contains(loaded.Routes, route.ID) {
 			continue
 		}
 		rule := fmt.Sprintf("the trial load: APISIX did not load route %s (%s), so it would never reach traffic", route.ID, route.Name)
-		for _, fragment := range fragments {
-			if strings.HasPrefix(route.ID, externalListener+"."+string(fragment.Slug)+".") {
-				return &Refusal{Fragment: fragment.Slug, Rule: rule}
-			}
+		if slug, found := fragmentOf[route.ID]; found {
+			return &Refusal{Fragment: slug, Rule: rule}
 		}
 		return errors.New(rule)
 	}
@@ -73,10 +80,10 @@ func compareLoaded(file ApisixFile, loaded Loaded, fragments []Fragment) error {
 			return fmt.Errorf("the trial load: APISIX did not load upstream %s, whose instances come from the instances file", upstream.ID)
 		}
 	}
-	if extra := without(loaded.Routes, ids(file.Routes, func(r Route) string { return r.ID })); len(extra) > 0 {
+	if extra := without(loaded.Routes, file.routeIDs()); len(extra) > 0 {
 		return fmt.Errorf("the trial load: APISIX loaded routes %v, which were not rendered", extra)
 	}
-	if extra := without(loaded.Upstreams, ids(file.Upstreams, func(u Upstream) string { return u.ID })); len(extra) > 0 {
+	if extra := without(loaded.Upstreams, file.upstreamIDs()); len(extra) > 0 {
 		return fmt.Errorf("the trial load: APISIX loaded upstreams %v, which were not rendered", extra)
 	}
 	return nil
