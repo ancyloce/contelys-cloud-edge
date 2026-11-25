@@ -40,6 +40,10 @@ jobs:
         with:
           go-version-file: platform/edge/go.mod
           cache-dependency-path: platform/edge/go.sum
+      # The runner's Docker engine predates the fix of moby/moby#50054, without which the trial load
+      # and the scenarios' containers can be given the same host port.
+      - name: Docker engine
+        run: bash platform/edge/.github/scripts/docker-engine.sh
       - name: Checks
         run: bash platform/edge/.github/scripts/verify.sh
 
@@ -78,6 +82,10 @@ jobs:
         with:
           go-version-file: platform/edge/go.mod
           cache-dependency-path: platform/edge/go.sum
+      # The runner's Docker engine predates the fix of moby/moby#50054, without which the trial load
+      # and the scenarios' containers can be given the same host port.
+      - name: Docker engine
+        run: bash platform/edge/.github/scripts/docker-engine.sh
       - name: Checks
         run: bash platform/edge/.github/scripts/verify.sh
       # The image that the checks built and scanned is the version's image. Until the organization
