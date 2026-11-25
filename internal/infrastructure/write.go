@@ -2,7 +2,9 @@ package infrastructure
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,9 +17,21 @@ import (
 // Write implements application.Sink. It encodes and checks every file before it writes any, so a
 // file that breaks a rule leaves the current ones in place. Each file is written beside the current
 // one, and only when all of them are written are they renamed into place, so that APISIX never reads
-// a half-written file and a failure while writing replaces none. apisix.yaml holds keys, so only its
-// owner may read it.
-func (Files) Write(dir string, out application.Output) (err error) {
+// a half-written file and a failure while writing replaces none. Until every new file is in place,
+// each current file keeps a second name, so that a failed rename puts back the files that it already
+// replaced. apisix.yaml holds keys, so only its owner may read it.
+func (Files) Write(dir string, out application.Output) error {
+	return write(dir, out, os.Rename)
+}
+
+// replacement is one file that write puts into place: its path, the new file beside it, and the
+// current file's second name, which is empty when there is no current file.
+type replacement struct {
+	path, temporary, previous string
+}
+
+// write is Write with the rename that puts each new file into place.
+func write(dir string, out application.Output, rename func(from, to string) error) error {
 	type file struct {
 		path    string
 		content []byte
@@ -37,10 +51,13 @@ func (Files) Write(dir string, out application.Output) (err error) {
 	}
 	files = append(files, file{filepath.Join(dir, "config.yaml"), config, 0o644})
 
-	var temporaries []string
+	var replacements []replacement
 	defer func() {
-		for _, temporary := range temporaries {
-			os.Remove(temporary) // a renamed one is gone already
+		for _, r := range replacements {
+			os.Remove(r.temporary) // a renamed one is gone already
+			if r.previous != "" {
+				os.Remove(r.previous) // a restored one is gone already
+			}
 		}
 	}()
 	for _, f := range files {
@@ -51,12 +68,48 @@ func (Files) Write(dir string, out application.Output) (err error) {
 		if err != nil {
 			return err
 		}
-		temporaries = append(temporaries, temporary)
-	}
-	for i, f := range files {
-		if err := os.Rename(temporaries[i], f.path); err != nil {
+		replacements = append(replacements, replacement{path: f.path, temporary: temporary})
+		if replacements[len(replacements)-1].previous, err = keepCurrent(f.path); err != nil {
 			return err
 		}
+	}
+	for i, r := range replacements {
+		if err := rename(r.temporary, r.path); err != nil {
+			return errors.Join(err, restore(replacements[:i], rename))
+		}
+	}
+	return nil
+}
+
+// keepCurrent gives the current file at path a second name beside it, a hard link, so that the file
+// is never missing, and returns that name, or "" when there is no current file.
+func keepCurrent(path string) (string, error) {
+	previous := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".previous")
+	if err := os.Remove(previous); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", err // one that a killed renderer left behind
+	}
+	if err := os.Link(path, previous); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", nil
+		}
+		return "", fmt.Errorf("keep the current %s: %w", path, err)
+	}
+	return previous, nil
+}
+
+// restore undoes the renames of replaced: each current file returns under its own name, with its
+// own modification time, and a file that had no current one is removed.
+func restore(replaced []replacement, rename func(from, to string) error) error {
+	var errs []error
+	for _, r := range replaced {
+		if r.previous == "" {
+			errs = append(errs, os.Remove(r.path))
+		} else {
+			errs = append(errs, rename(r.previous, r.path))
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return fmt.Errorf("put back the files already replaced: %w", err)
 	}
 	return nil
 }
