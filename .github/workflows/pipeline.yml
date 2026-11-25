@@ -104,5 +104,5 @@ jobs:
             echo
             echo "Image: \`$digest\`"
             echo
-            echo "For the version manifest: \`edge: {version: $VERSION, digest: ${digest#*@}}\`"
+            echo "For the version manifest: \`edge: {version: v$VERSION, digest: \"${digest#*@}\"}\`"
           } >> "$GITHUB_STEP_SUMMARY"
