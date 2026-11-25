@@ -127,8 +127,8 @@ type Inputs struct {
 
 // NewInputs writes a complete set of inputs into a temporary directory: an instances file with one
 // Edge instance at edgeAddress, an installation file without load-balancer addresses, empty
-// directories of fragments and of contracts, and the application hostname's certificate and the
-// trust store, both from ca.
+// directories of fragments and of contracts, the application hostname's certificate, Edge's own
+// certificate for the name edge, and the trust store, all from ca.
 func NewInputs(t testing.TB, ca *Authority, edgeAddress string) *Inputs {
 	t.Helper()
 	in := &Inputs{Dir: t.TempDir()}
@@ -142,6 +142,9 @@ func NewInputs(t testing.TB, ca *Authority, edgeAddress string) *Inputs {
 	certificate, key, _ := ca.Issue(t, ApplicationHostname)
 	in.Write(t, filepath.Join("secrets", infrastructure.ApplicationCertificateFile), string(certificate))
 	in.Write(t, filepath.Join("secrets", infrastructure.ApplicationKeyFile), string(key))
+	certificate, key, _ = ca.Issue(t, string(application.EdgeSlug))
+	in.Write(t, filepath.Join("secrets", infrastructure.EdgeCertificateFile), string(certificate))
+	in.Write(t, filepath.Join("secrets", infrastructure.EdgeKeyFile), string(key))
 	in.Write(t, filepath.Join("secrets", infrastructure.TrustStoreFile), string(ca.PEM))
 	return in
 }

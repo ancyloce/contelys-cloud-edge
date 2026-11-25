@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -190,6 +191,10 @@ type setup struct {
 	stubs                 []*stub
 	fragments             map[application.Slug]string
 	loadBalancerAddresses []string
+	// revision is the configuration revision, fixture.Revision unless set, and edges are the
+	// addresses of the Edge instances, edgeAddress alone unless set.
+	revision string
+	edges    []string
 }
 
 // render writes the inputs and renders them with the edge command, whose trial load starts the
@@ -210,7 +215,10 @@ func (s setup) render(t *testing.T) string {
 func (s setup) renderInto(t *testing.T, out string) (string, error) {
 	t.Helper()
 	in := fixture.NewInputs(t, s.ca, edgeAddress)
-	instances := application.Instances{application.EdgeSlug: {{Address: edgeAddress, Port: 9443, Weight: 1}}}
+	instances := application.Instances{}
+	for _, address := range s.edgeAddresses() {
+		instances[application.EdgeSlug] = append(instances[application.EdgeSlug], application.Instance{Address: address, Port: 9444, Weight: 1})
+	}
 	for _, stub := range s.stubs {
 		instances[stub.slug] = []application.Instance{{Address: hostGateway, Port: stub.port, Weight: 1}}
 	}
@@ -222,8 +230,36 @@ func (s setup) renderInto(t *testing.T, out string) (string, error) {
 			in.Contract(t, string(slug), contractPaths(t, fragment)...)
 		}
 	}
-	output, err := exec.Command(edgeCommand, in.Args(out)...).CombinedOutput()
+	args := in.Args(out)
+	if s.revision != "" {
+		args[slices.Index(args, "--revision")+1] = s.revision
+	}
+	output, err := exec.Command(edgeCommand, args...).CombinedOutput()
 	return string(output), err
+}
+
+// edgeAddresses are the addresses of the scenario's Edge instances.
+func (s setup) edgeAddresses() []string {
+	if len(s.edges) == 0 {
+		return []string{edgeAddress}
+	}
+	return s.edges
+}
+
+// apply renders the inputs into out, which holds the files of running instances, and gives each
+// instance's apisix.yaml to the user that Edge runs as, as a deployment does: here the file is made
+// readable for every user. An instance that polls before that cannot open the file, and retries at
+// its next poll (section 03).
+func (s setup) apply(t *testing.T, out string) {
+	t.Helper()
+	if output, err := s.renderInto(t, out); err != nil {
+		t.Fatalf("edge render: %v: %s", err, output)
+	}
+	for _, address := range s.edgeAddresses() {
+		if err := os.Chmod(filepath.Join(out, address, "apisix.yaml"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 // contractPaths are the path templates of a contract that holds every path of a fragment.
@@ -287,16 +323,30 @@ func controlAnswers(status int) wait.Strategy {
 		WithStatusCodeMatcher(func(got int) bool { return got == status })
 }
 
+// startEdgeAt starts the Edge instance at address of the rendered output out, which mounts its own
+// directory there.
+func startEdgeAt(t *testing.T, ca *fixture.Authority, out, address string) *edge {
+	t.Helper()
+	return startEdgeMountingAt(t, ca, out, address, filepath.Join(out, address)+":"+routesDirectory+":ro", controlAnswers(http.StatusOK))
+}
+
 // startEdgeMounting starts an Edge instance whose routes come in through the bind mount routesMount,
 // and waits until ready holds.
 func startEdgeMounting(t *testing.T, ca *fixture.Authority, out, routesMount string, ready wait.Strategy) *edge {
+	t.Helper()
+	return startEdgeMountingAt(t, ca, out, edgeAddress, routesMount, ready)
+}
+
+// startEdgeMountingAt is startEdgeMounting for the Edge instance at address.
+func startEdgeMountingAt(t *testing.T, ca *fixture.Authority, out, address, routesMount string, ready wait.Strategy) *edge {
 	t.Helper()
 	trustStore := filepath.Join(t.TempDir(), "ca.crt")
 	if err := os.WriteFile(trustStore, ca.PEM, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	routes := filepath.Join(out, address, "apisix.yaml")
 	for path, mode := range map[string]os.FileMode{
-		filepath.Dir(routesFile(out)): 0o755, routesFile(out): 0o644, filepath.Join(out, "config.yaml"): 0o644,
+		filepath.Dir(routes): 0o755, routes: 0o644, filepath.Join(out, "config.yaml"): 0o644,
 	} {
 		if err := os.Chmod(path, mode); err != nil {
 			t.Fatal(err)
@@ -441,4 +491,76 @@ func marshal(t *testing.T, v any) []byte {
 		t.Fatal(err)
 	}
 	return content
+}
+
+// confirm runs edge confirm against the instance, as both profiles run it after a rendering, for the
+// instance at address of the rendered output out. It returns what the command wrote and the error of
+// its exit status.
+func (e *edge) confirm(t *testing.T, out, address, revision string) (string, error) {
+	t.Helper()
+	secrets := t.TempDir()
+	if err := os.WriteFile(filepath.Join(secrets, "ca.crt"), e.ca.PEM, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	output, err := exec.Command(edgeCommand, "confirm", "--out", out, "--instance", address, "--revision", revision,
+		"--internal", e.address(t, internalListener), "--control", e.address(t, controlListener), "--secrets", secrets).CombinedOutput()
+	return string(output), err
+}
+
+// confirmed runs edge confirm and fails the scenario unless the instance applied revision.
+func (e *edge) confirmed(t *testing.T, out, address, revision string) {
+	t.Helper()
+	if output, err := e.confirm(t, out, address, revision); err != nil {
+		t.Fatalf("edge confirm %s: %v: %s", revision, err, output)
+	}
+}
+
+// internalGet sends a request to the internal listener under the name edge, which its certificate
+// carries, as a deployable or the confirmation does.
+func (e *edge) internalGet(t *testing.T, path string) *http.Response {
+	t.Helper()
+	address := e.address(t, internalListener)
+	client := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: e.ca.Pool(), ServerName: string(application.EdgeSlug)},
+	}}
+	response, err := client.Get("https://" + address + path)
+	if err != nil {
+		t.Fatalf("GET %s on the internal listener: %v", path, err)
+	}
+	t.Cleanup(func() { response.Body.Close() })
+	return response
+}
+
+// started is when the container last started, and how often Docker restarted it.
+func (e *edge) started(t *testing.T) (string, int) {
+	t.Helper()
+	inspected, err := e.container.Inspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return inspected.State.StartedAt, inspected.RestartCount
+}
+
+// distributedAnswer is the answer of the fixed-response route that the apisix.yaml of the instance
+// at address in out carries.
+func distributedAnswer(t *testing.T, out, address string) string {
+	t.Helper()
+	var file struct {
+		Routes []struct {
+			ID      string `yaml:"id"`
+			Plugins struct {
+				Mocking struct {
+					ResponseExample string `yaml:"response_example"`
+				} `yaml:"mocking"`
+			} `yaml:"plugins"`
+		} `yaml:"routes"`
+	}
+	decodeFile(t, filepath.Join(out, address, "apisix.yaml"), &file)
+	for _, route := range file.Routes {
+		if route.ID == application.RevisionRouteID {
+			return route.Plugins.Mocking.ResponseExample
+		}
+	}
+	t.Fatalf("the apisix.yaml of %s holds no fixed-response route", address)
+	return ""
 }
