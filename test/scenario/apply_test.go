@@ -80,13 +80,21 @@ func TestAFileWhoseTimeLiesInTheSecondThatTheInstanceLoadedIsNeverApplied(t *tes
 	edge := startEdge(t, current.ca, out)
 	_, info := readWithInfo(t, routesFile(out))
 	loaded := info.ModTime()
+	// Another time within the second that the instance loaded, so that only the second matches.
+	stamp := loaded.Truncate(time.Second)
+	if stamp.Equal(loaded) {
+		stamp = stamp.Add(time.Second / 2)
+	}
 
 	changed := writeBeside(t, routesFile(out), changedRoutes(t, current))
-	if err := os.Chtimes(changed, loaded, loaded); err != nil {
+	if err := os.Chtimes(changed, stamp, stamp); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Rename(changed, routesFile(out)); err != nil {
 		t.Fatal(err)
+	}
+	if _, info := readWithInfo(t, routesFile(out)); info.ModTime().Equal(loaded) || info.ModTime().Unix() != loaded.Unix() {
+		t.Fatalf("the changed file's time %v is not another time within the loaded second of %v", info.ModTime(), loaded)
 	}
 	edge.expectNotApplied(t, 3*pollingInterval)
 
@@ -107,6 +115,9 @@ func TestARouteChangeTakesEffectWithoutARestartAndTheInstanceConfirmsTheNewRevis
 	edge := startEdge(t, current.ca, out)
 	edge.confirmed(t, out, edgeAddress, revisionA)
 	startedAt, restarts := edge.started(t)
+	if got := edge.get(t, externalListener, archivePath, nil).StatusCode; got != http.StatusNotFound {
+		t.Fatalf("%s answered %d before the change, want %d", archivePath, got, http.StatusNotFound)
+	}
 
 	changed := current
 	changed.fragments = map[application.Slug]string{"projects": archiveFragment}

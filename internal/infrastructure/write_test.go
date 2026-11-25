@@ -92,6 +92,10 @@ func TestASecondReplacementWithinOneSecondWaitsForTheNextSecond(t *testing.T) {
 	}
 
 	write("second")
+	// It waited for the next second, rather than stamping a time ahead of the clock.
+	if next := now.Truncate(time.Second).Add(time.Second); time.Now().Before(next) {
+		t.Errorf("the second replacement returned before %v, the start of the next second", next)
+	}
 
 	info, err := os.Stat(path)
 	if err != nil {
