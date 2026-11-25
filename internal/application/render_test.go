@@ -115,6 +115,39 @@ func TestValidInputsAreRenderedAndWritten(t *testing.T) {
 	}
 }
 
+// Design section 03 gives Authoring every path outside /api/ that no other route claims. A route
+// that claims the remainder therefore answers neither under /api/ nor under /internal, whatever the
+// case of /internal, and such a request finds no route and gets Edge's 404. Every other route keeps
+// its listener condition alone.
+func TestAuthoringsRemainderLeavesThePathsUnderAPIAndInternalToEdge(t *testing.T) {
+	in := validInputs()
+	withFragment(&in, application.AuthoringSlug, nil, anonymous([]string{"/*"}, "GET"), anonymous([]string{"/editor/*"}, "GET"))
+	loads := &trial{}
+	if err, _ := renderWith(in, loads); err != nil {
+		t.Fatal(err)
+	}
+
+	onExternal := []any{"server_port", "==", 9443}
+	want := map[string][][]any{
+		"/*":               {onExternal, {"uri", "!", "~~", "^/api(/|$)"}, {"uri", "!", "~*", "^/internal(/|$)"}},
+		"/editor/*":        {onExternal},
+		"/api/v1/projects": {onExternal},
+	}
+	for _, route := range loads.candidates[0].File.Routes {
+		if !strings.HasPrefix(route.ID, "external.") {
+			continue
+		}
+		path := route.URIs[0]
+		if !slices.EqualFunc(route.Vars, want[path], slices.Equal) {
+			t.Errorf("route %s: conditions %v, want %v", path, route.Vars, want[path])
+		}
+		delete(want, path)
+	}
+	if len(want) != 0 {
+		t.Errorf("not rendered on the external listener: %v", want)
+	}
+}
+
 func TestTheTrialLoadStartsTheImageWithTheCandidateFilesOnceForEachDistinctFile(t *testing.T) {
 	in := validInputs()
 	in.Instances["edge"] = append(in.Instances["edge"], application.Instance{Address: "10.0.0.6", Port: 9443, Weight: 1})
