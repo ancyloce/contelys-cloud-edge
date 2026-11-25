@@ -75,6 +75,12 @@ routes:
 	if !strings.HasPrefix(inputs.Secrets.ApplicationKey, "-----BEGIN PRIVATE KEY-----") {
 		t.Error("the application key was not read")
 	}
+	if inputs.Secrets.EdgeCertificate != string(in.Read(t, "secrets/edge.crt")) || inputs.Secrets.EdgeKey != string(in.Read(t, "secrets/edge.key")) {
+		t.Error("Edge's own certificate was not read")
+	}
+	if inputs.Revision != fixture.Revision {
+		t.Errorf("revision: got %q, want %q", inputs.Revision, fixture.Revision)
+	}
 	if inputs.Secrets.TrustStore != string(in.Read(t, "secrets/ca.crt")) {
 		t.Error("the trust store was not read")
 	}
@@ -160,6 +166,8 @@ routes:
 			filepath.Join("contracts", "projects", "openapi.yaml") + ": yaml:"},
 		{"a certificate and a key that do not belong together", "secrets/application.crt", string(otherCertificate), false,
 			"application.crt and application.key: "},
+		{"Edge's own certificate and a key that do not belong together", "secrets/edge.crt", string(otherCertificate), false,
+			"edge.crt and edge.key: "},
 		{"a trust store without a certificate", "secrets/ca.crt", "not a certificate\n", false,
 			"ca.crt holds no certificate"},
 	}
