@@ -11,6 +11,9 @@ import (
 // A broken rule of a fragment is a Refusal; a broken rule of the installation's own files is an
 // error of its inputs.
 func check(in Inputs) error {
+	if err := checkRevision(in.Revision); err != nil {
+		return err
+	}
 	for _, slug := range slices.Sorted(maps.Keys(in.Instances)) {
 		if !slug.valid() {
 			return fmt.Errorf("the instances file: %q is not a slug", slug)

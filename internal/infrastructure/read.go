@@ -17,6 +17,10 @@ import (
 const (
 	ApplicationCertificateFile = "application.crt"
 	ApplicationKeyFile         = "application.key"
+	// EdgeCertificateFile and EdgeKeyFile are Edge's own certificate, which carries the name edge and
+	// serves the internal listener (section 07).
+	EdgeCertificateFile = "edge.crt"
+	EdgeKeyFile         = "edge.key"
 	// TrustStoreFile is the installation's certificate authority. config.yaml names it at its
 	// place in the container, and the renderer checks that it holds a certificate and hands it to
 	// the instance of the trial load.
@@ -60,6 +64,7 @@ func (Files) Read(req application.Request) (application.Inputs, error) {
 		Fragments:    fragments,
 		Contracts:    contracts,
 		Secrets:      secrets,
+		Revision:     req.Revision,
 	}, nil
 }
 
@@ -82,16 +87,28 @@ func readSecrets(dir string) (application.Secrets, error) {
 		content, err := os.ReadFile(filepath.Join(dir, name))
 		return string(content), err
 	}
-	certificate, err := read(ApplicationCertificateFile)
+	// pair reads a certificate and its key, and checks that they belong together.
+	pair := func(certificateFile, keyFile string) (string, string, error) {
+		certificate, err := read(certificateFile)
+		if err != nil {
+			return "", "", err
+		}
+		key, err := read(keyFile)
+		if err != nil {
+			return "", "", err
+		}
+		if _, err := tls.X509KeyPair([]byte(certificate), []byte(key)); err != nil {
+			return "", "", fmt.Errorf("%s and %s: %w", certificateFile, keyFile, err)
+		}
+		return certificate, key, nil
+	}
+	certificate, key, err := pair(ApplicationCertificateFile, ApplicationKeyFile)
 	if err != nil {
 		return application.Secrets{}, err
 	}
-	key, err := read(ApplicationKeyFile)
+	edgeCertificate, edgeKey, err := pair(EdgeCertificateFile, EdgeKeyFile)
 	if err != nil {
 		return application.Secrets{}, err
-	}
-	if _, err := tls.X509KeyPair([]byte(certificate), []byte(key)); err != nil {
-		return application.Secrets{}, fmt.Errorf("%s and %s: %w", ApplicationCertificateFile, ApplicationKeyFile, err)
 	}
 	trustStore, err := read(TrustStoreFile)
 	if err != nil {
@@ -100,5 +117,9 @@ func readSecrets(dir string) (application.Secrets, error) {
 	if !x509.NewCertPool().AppendCertsFromPEM([]byte(trustStore)) {
 		return application.Secrets{}, fmt.Errorf("%s holds no certificate", TrustStoreFile)
 	}
-	return application.Secrets{ApplicationCertificate: certificate, ApplicationKey: key, TrustStore: trustStore}, nil
+	return application.Secrets{
+		ApplicationCertificate: certificate, ApplicationKey: key,
+		EdgeCertificate: edgeCertificate, EdgeKey: edgeKey,
+		TrustStore: trustStore,
+	}, nil
 }

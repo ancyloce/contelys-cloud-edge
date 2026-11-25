@@ -87,6 +87,12 @@ func renderApisix(in Inputs) (ApisixFile, error) {
 			SNIs: []string{in.Installation.ApplicationHostname},
 			Cert: in.Secrets.ApplicationCertificate,
 			Key:  in.Secrets.ApplicationKey,
+		}, {
+			// Edge's own certificate carries the name edge and serves the internal listener (section 07).
+			ID:   string(EdgeSlug),
+			SNIs: []string{string(EdgeSlug)},
+			Cert: in.Secrets.EdgeCertificate,
+			Key:  in.Secrets.EdgeKey,
 		}},
 	}
 	for _, fragment := range in.Fragments {
@@ -103,6 +109,11 @@ func renderApisix(in Inputs) (ApisixFile, error) {
 		}
 		file.Upstreams = append(file.Upstreams, upstream(fragment.Slug, instances))
 	}
+	revision, err := revisionRoute(in)
+	if err != nil {
+		return ApisixFile{}, err
+	}
+	file.Routes = append(file.Routes, revision)
 	return file, nil
 }
 
@@ -128,7 +139,7 @@ func externalRoute(in Inputs, slug Slug, route FragmentRoute) (Route, error) {
 	}
 	return Route{
 		ID:         fragmentRouteID(slug, route),
-		Name:       string(slug) + " " + strings.Join(route.Methods, ",") + " " + strings.Join(route.Paths, " "),
+		Name:       routeName(slug, route.Paths, route.Methods),
 		Host:       in.Installation.ApplicationHostname,
 		URIs:       route.Paths,
 		Methods:    route.Methods,
@@ -165,6 +176,12 @@ func upstream(slug Slug, instances []Instance) Upstream {
 // fragmentRouteID is the id of a fragment's route, which the external listener carries.
 func fragmentRouteID(slug Slug, route FragmentRoute) string {
 	return routeID("external", slug, route.Paths, route.Methods)
+}
+
+// routeName is a route's name: the slug, the methods and the paths, so that two routes on the same
+// paths keep their metrics apart, because metric labels use the name.
+func routeName(slug Slug, paths, methods []string) string {
+	return string(slug) + " " + strings.Join(methods, ",") + " " + strings.Join(paths, " ")
 }
 
 // onListener is the condition that binds a route to one listener. A route without it answers on

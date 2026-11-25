@@ -45,7 +45,7 @@ func TestTheCommandLineReachesTheRendererAndEachOutcomeHasItsExitCode(t *testing
 			}
 			var stdout, stderr bytes.Buffer
 
-			code := commands.Run(c.args, &stdout, &stderr, render)
+			code := commands.Run(c.args, &stdout, &stderr, render, confirmNothing)
 
 			if code != c.code || !strings.Contains(stderr.String(), c.message) {
 				t.Errorf("exit code %d, stderr %q; want %d and %q", code, stderr.String(), c.code, c.message)
@@ -57,6 +57,58 @@ func TestTheCommandLineReachesTheRendererAndEachOutcomeHasItsExitCode(t *testing
 			if received != nil && (received.Instances != "instances.yaml" || received.Contracts != "contracts/openapi" ||
 				received.Revision != "0123456789abcdef" || received.Image != "contelys/edge@sha256:0123" || received.Out != "out") {
 				t.Errorf("the renderer received %+v", *received)
+			}
+		})
+	}
+}
+
+// confirmNothing stands for edge confirm in the tests of edge render.
+func confirmNothing(application.ConfirmRequest) (application.Answer, error) {
+	return application.Answer{}, errors.New("not called")
+}
+
+var completeConfirm = []string{"confirm",
+	"--out", "out", "--instance", "10.0.0.5", "--revision", "0123456789abcdef",
+	"--internal", "127.0.0.1:9444", "--control", "127.0.0.1:9090", "--secrets", "secrets",
+}
+
+func TestTheCommandLineReachesTheConfirmationAndEachOutcomeHasItsExitCode(t *testing.T) {
+	applied := application.Answer{Revision: "0123456789abcdef", Digest: "sha256:ab"}
+	cases := []struct {
+		name    string
+		args    []string
+		outcome error
+		code    int
+		stdout  string
+		stderr  string
+	}{
+		{"confirmed", completeConfirm, nil, 0, "edge confirm: 10.0.0.5 applied revision 0123456789abcdef with digest sha256:ab", ""},
+		{"not applied", completeConfirm, &application.NotApplied{Instance: "10.0.0.5", Reason: "it answers revision 0ld"}, 1, "",
+			"edge confirm: the instance at 10.0.0.5 has not applied its distributed apisix.yaml: it answers revision 0ld"},
+		{"an error", completeConfirm, errors.New("the control listener of the instance at 10.0.0.5: refused"), 2, "",
+			"edge confirm: the control listener of the instance at 10.0.0.5: refused"},
+		{"a missing flag", completeConfirm[:len(completeConfirm)-2], nil, 2, "", "edge confirm: --secrets is required"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var received *application.ConfirmRequest
+			confirm := func(req application.ConfirmRequest) (application.Answer, error) {
+				received = &req
+				if c.outcome != nil {
+					return application.Answer{}, c.outcome
+				}
+				return applied, nil
+			}
+			var stdout, stderr bytes.Buffer
+
+			code := commands.Run(c.args, &stdout, &stderr, func(application.Request) error { return errors.New("not called") }, confirm)
+
+			if code != c.code || !strings.Contains(stdout.String(), c.stdout) || !strings.Contains(stderr.String(), c.stderr) {
+				t.Errorf("exit code %d, stdout %q, stderr %q; want %d, %q and %q", code, stdout.String(), stderr.String(), c.code, c.stdout, c.stderr)
+			}
+			if c.name != "a missing flag" && (received == nil || received.Out != "out" || received.Instance != "10.0.0.5" ||
+				received.Internal != "127.0.0.1:9444" || received.Control != "127.0.0.1:9090" || received.Secrets != "secrets") {
+				t.Errorf("the confirmation received %+v", received)
 			}
 		})
 	}

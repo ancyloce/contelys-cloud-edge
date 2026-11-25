@@ -12,13 +12,19 @@ import (
 	"github.com/contelys/contelys-cloud-edge/internal/application"
 )
 
+// answerRoute carries the placeholder of the file's digest, as the fixed-response route of every
+// rendered apisix.yaml does, so that the sink can put the digest in its place.
+var answerRoute = application.Route{ID: "internal.edge.937ee30909fc", Plugins: map[string]any{
+	"mocking": application.Mocking{ResponseExample: `{"digest":"` + application.DigestPlaceholder + `"}`},
+}}
+
 // A rename that fails after another succeeded puts back the file already replaced, or removes it when
 // there was none, so that every instance keeps its current file and no other file is left behind.
 // The second of the three renames fails: the first instance's apisix.yaml is already in place, and the
 // second instance's and config.yaml are not.
 func TestAFailedRenamePutsBackTheFilesAlreadyReplaced(t *testing.T) {
 	output := func(id string) application.Output {
-		file := application.ApisixFile{Routes: []application.Route{{ID: id}}}
+		file := application.ApisixFile{Routes: []application.Route{{ID: id}, answerRoute}}
 		return application.Output{Instances: []application.InstanceOutput{{Address: "10.0.0.5", File: file}, {Address: "10.0.0.6", File: file}}}
 	}
 	for name, current := range map[string]bool{"over current files": true, "without current files": false} {

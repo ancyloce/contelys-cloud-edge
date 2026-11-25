@@ -75,6 +75,7 @@ func validInputs() application.Inputs {
 		}}},
 		Contracts: map[application.Slug][]string{"projects": projectsContract},
 		Secrets:   application.Secrets{TrustStore: "-----BEGIN CERTIFICATE-----\n"},
+		Revision:  "0123456789abcdef0123456789abcdef01234567",
 	}
 }
 
@@ -165,7 +166,8 @@ func TestTheTrialLoadStartsTheImageWithTheCandidateFilesOnceForEachDistinctFile(
 	if candidate.Image != image || candidate.TrustStore != in.Secrets.TrustStore {
 		t.Errorf("image %q, trust store %q", candidate.Image, candidate.TrustStore)
 	}
-	if routes := candidate.File.Routes; len(routes) != 1 || routes[0].ID != "external.projects.cec1c806d8c4" {
+	// The fragment's route and the fixed-response route.
+	if routes := candidate.File.Routes; len(routes) != 2 || routes[0].ID != "external.projects.cec1c806d8c4" || routes[1].ID != "internal.edge.937ee30909fc" {
 		t.Errorf("routes of the candidate apisix.yaml: %+v", routes)
 	}
 	// The candidate config.yaml is the installation's, with its listeners and its list of plugins.
@@ -245,6 +247,10 @@ func TestEachRuleRefusesItsFixtureAndNothingIsWritten(t *testing.T) {
 		refusal bool // a refusal names a fragment; any other failure is an error of the inputs
 		message string
 	}{
+		// The fixed-response route carries the revision as it is, and its plugin reads a $ as a variable.
+		{"a revision that is not a Git commit", func(in *application.Inputs) {
+			in.Revision = "abc$remote_addr"
+		}, false, `the configuration revision "abc$remote_addr" is not a Git commit`},
 		{"a slug in the instances file that is not a slug", func(in *application.Inputs) {
 			in.Instances["Projects"] = in.Instances["projects"]
 		}, false, `the instances file: "Projects" is not a slug`},

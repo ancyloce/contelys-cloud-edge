@@ -28,7 +28,7 @@ import (
 func TestThePinnedImageReportsItsVersionAndOpensNoAdminAPI(t *testing.T) {
 	t.Parallel()
 	ca := fixture.NewAuthority(t)
-	edge := startEdge(t, ca, setup{ca: ca}.render(t)) // an empty route file
+	edge := startEdge(t, ca, setup{ca: ca}.render(t)) // a route file without fragments
 
 	// APISIX names its version in the Server header of its answers.
 	server := edge.get(t, externalListener, "/no-route", nil).Header.Get("Server")
@@ -39,8 +39,9 @@ func TestThePinnedImageReportsItsVersionAndOpensNoAdminAPI(t *testing.T) {
 	if found && !atLeast(t, version, "3.20.0") {
 		t.Errorf("version %s is below the floor of 3.20.0 (section 07)", version)
 	}
-	if ids := edge.loadedIDs(t, "routes"); len(ids) != 0 {
-		t.Errorf("the control listener reports routes %v for an empty route file", ids)
+	// Without fragments the fixed-response route is the only route.
+	if ids := edge.loadedIDs(t, "routes"); !slices.Equal(ids, []string{application.RevisionRouteID}) {
+		t.Errorf("the control listener reports routes %v for a route file without fragments", ids)
 	}
 
 	// Nothing answers where the Admin API would listen, and no listener serves its paths.

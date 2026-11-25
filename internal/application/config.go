@@ -21,9 +21,9 @@ const (
 )
 
 // enabledPlugins are the built-in plugins that the design uses, and no others: no plugin for CORS,
-// compression or serverless functions.
+// compression or serverless functions. mocking answers the fixed-response route.
 var enabledPlugins = []string{
-	"client-control", "forward-auth", "limit-conn", "limit-count", "limit-req", "opentelemetry",
+	"client-control", "forward-auth", "limit-conn", "limit-count", "limit-req", FixedResponsePlugin, "opentelemetry",
 	"prometheus", "proxy-rewrite", "public-api", "real-ip", "request-id", "response-rewrite",
 }
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -81,7 +82,7 @@ func TestTheTrialLoadStartsWithTheCandidateConfigYamlAndRemovesItsContainer(t *t
 	current := projectsOnly(t)
 	out := current.render(t)
 	candidate := application.Candidate{Image: image, TrustStore: string(current.ca.PEM)}
-	decodeFile(t, routesFile(out), &candidate.File)
+	decodeRendered(t, routesFile(out), &candidate.File)
 	decodeFile(t, filepath.Join(out, "config.yaml"), &candidate.Config)
 	route := candidate.File.Routes[0].ID
 	if _, uses := candidate.File.Routes[0].Plugins["response-rewrite"]; !uses {
@@ -134,6 +135,24 @@ func readWithInfo(t *testing.T, path string) ([]byte, os.FileInfo) {
 		t.Fatal(err)
 	}
 	return content, info
+}
+
+// decodeRendered decodes a rendered apisix.yaml as it reads with the placeholder in place of its
+// digest, which is how section 03 defines the digest, so that the sink and the trial load can put
+// the digest in again.
+func decodeRendered(t *testing.T, path string, v any) {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := regexp.MustCompile(application.DigestPrefix + "[0-9a-f]{64}")
+	if n := len(digest.FindAll(content, -1)); n != 1 {
+		t.Fatalf("%s holds %d digests, want 1", path, n)
+	}
+	if err := yaml.Unmarshal(digest.ReplaceAll(content, []byte(application.DigestPlaceholder)), v); err != nil {
+		t.Fatalf("%s: %v", path, err)
+	}
 }
 
 func decodeFile(t *testing.T, path string, v any) {
