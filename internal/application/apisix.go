@@ -37,14 +37,16 @@ func (f ApisixFile) sslIDs() []string {
 }
 
 // Route is one APISIX route. Every route carries an explicit id, a name and a listener condition.
+// A route without a host answers whatever name the caller asks for, and a route without an upstream
+// is answered by one of its plugins.
 type Route struct {
 	ID         string         `yaml:"id"`
 	Name       string         `yaml:"name"`
-	Host       string         `yaml:"host"`
+	Host       string         `yaml:"host,omitempty"`
 	URIs       []string       `yaml:"uris"`
 	Methods    []string       `yaml:"methods"`
 	Vars       [][]any        `yaml:"vars"`
-	UpstreamID string         `yaml:"upstream_id"`
+	UpstreamID string         `yaml:"upstream_id,omitempty"`
 	Plugins    map[string]any `yaml:"plugins,omitempty"`
 }
 
@@ -91,4 +93,13 @@ type ResponseRewrite struct {
 // ResponseHeaders are the headers that response-rewrite sets on an answer.
 type ResponseHeaders struct {
 	Set map[string]string `yaml:"set"`
+}
+
+// Mocking is the configuration of the built-in mocking plugin, which answers the fixed-response
+// route itself. The plugin reads a $ in the body as a variable, and adds a header that names APISIX
+// unless WithMockHeader is false.
+type Mocking struct {
+	ContentType     string `yaml:"content_type"`
+	ResponseExample string `yaml:"response_example"`
+	WithMockHeader  bool   `yaml:"with_mock_header"`
 }

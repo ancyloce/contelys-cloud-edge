@@ -34,6 +34,8 @@ type Inputs struct {
 	// contract has no entry.
 	Contracts map[Slug][]string
 	Secrets   Secrets
+	// Revision is the configuration revision, the Git commit that the fixed-response route answers.
+	Revision string
 }
 
 // Slug is a deployable's name in lower case with hyphens, such as organization-access.
@@ -75,12 +77,14 @@ type Installation struct {
 	CollectorAddresses     []string `yaml:"collector_addresses"`
 }
 
-// Secrets are the contents of the secret files: the certificate and key that the renderer copies
-// into apisix.yaml, and the trust store, which each instance mounts and the trial load hands to its
-// instance.
+// Secrets are the contents of the secret files: the certificates and keys that the renderer copies
+// into apisix.yaml, the application hostname's and Edge's own for the internal listener, and the
+// trust store, which each instance mounts and the trial load hands to its instance.
 type Secrets struct {
 	ApplicationCertificate string
 	ApplicationKey         string
+	EdgeCertificate        string
+	EdgeKey                string
 	TrustStore             string
 }
 
