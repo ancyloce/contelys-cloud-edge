@@ -2,10 +2,14 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -27,7 +31,13 @@ const (
 // projects. Authoring has no contract.
 func newInputs(t *testing.T) *fixture.Inputs {
 	t.Helper()
-	in := fixture.NewInputs(t, fixture.NewAuthority(t), edgeAddress)
+	return newInputsFrom(t, fixture.NewAuthority(t))
+}
+
+// newInputsFrom is newInputs with its certificates and trust store from ca.
+func newInputsFrom(t *testing.T, ca *fixture.Authority) *fixture.Inputs {
+	t.Helper()
+	in := fixture.NewInputs(t, ca, edgeAddress)
 	in.Write(t, "instances.yaml", `
 edge:
   - {address: 10.0.0.5, port: 9443, weight: 1}
@@ -82,6 +92,9 @@ routes:
 
 	var ids, names []any
 	for _, route := range renderOK(t, in).apisix(t, edgeAddress).items(t, "routes") {
+		if strings.HasPrefix(route["id"].(string), "internal.") {
+			continue // the fixed-response route
+		}
 		ids = append(ids, route["id"])
 		names = append(names, route["name"])
 	}
@@ -114,6 +127,65 @@ routes:
 	}
 }
 
+// Design section 03: the rendered file holds one fixed-response route on the internal listener,
+// under Edge's own slug, which a built-in plugin answers with the configuration revision and the
+// digest of the file. The digest cannot cover its own text, so it is the SHA-256 of the file as it
+// reads with 64 zeros in the digest's place.
+func TestTheFixedResponseRouteAnswersTheRevisionAndTheDigestOfTheFileOnTheInternalListener(t *testing.T) {
+	out := renderOK(t, newInputs(t))
+
+	route := out.apisix(t, edgeAddress).routeWithURIs(t, "/edge/revision")
+	equal(t, "id", route["id"], "internal.edge.937ee30909fc")
+	equal(t, "name", route["name"], "edge GET /edge/revision")
+	equal(t, "methods", route["methods"], []any{"GET"})
+	equal(t, "listener condition", route["vars"], []any{[]any{"server_port", "==", 9444}})
+	equal(t, "host", route["host"], nil)
+	equal(t, "upstream", route["upstream_id"], nil)
+	plugins := route["plugins"].(map[string]any)
+	mocking, _ := plugins["mocking"].(map[string]any)
+	equal(t, "plugins", len(plugins), 1)
+	equal(t, "content type", mocking["content_type"], "application/json")
+	equal(t, "mock header", mocking["with_mock_header"], false)
+
+	body, _ := mocking["response_example"].(string)
+	var answer struct {
+		Revision string `json:"revision"`
+		Digest   string `json:"digest"`
+	}
+	if err := json.Unmarshal([]byte(body), &answer); err != nil {
+		t.Fatalf("the body %q: %v", body, err)
+	}
+	if want := `{"revision":"` + fixture.Revision + `","digest":"` + answer.Digest + `"}`; body != want {
+		t.Errorf("body %q, want %q", body, want)
+	}
+	content := out.read(t, filepath.Join(edgeAddress, "apisix.yaml"))
+	hexDigest, found := strings.CutPrefix(answer.Digest, "sha256:")
+	if !found || len(hexDigest) != 64 || bytes.Count(content, []byte(hexDigest)) != 1 {
+		t.Fatalf("digest %q: want sha256: and 64 hexadecimal digits that the file holds once", answer.Digest)
+	}
+	sum := sha256.Sum256(bytes.Replace(content, []byte(hexDigest), []byte(strings.Repeat("0", 64)), 1))
+	equal(t, "digest", hexDigest, hex.EncodeToString(sum[:]))
+	if strings.Contains(body, "$") {
+		t.Errorf("the body %q holds $, which the plugin reads as a variable", body)
+	}
+}
+
+// The plugin would read a $ in the body as a variable, and the revision is a Git commit.
+func TestARevisionThatIsNotACommitExitsWithTwoAndWritesNothing(t *testing.T) {
+	for _, revision := range []string{"abc$remote_addr", "abc def", `abc"`} {
+		in := newInputs(t)
+		args := in.Args(filepath.Join(t.TempDir(), "out"))
+		args[slices.Index(args, "--revision")+1] = revision
+		var stdout, stderr bytes.Buffer
+
+		code := run(args, &stdout, &stderr, loadsEverything{}, quickly)
+
+		if code != 2 || !strings.Contains(stderr.String(), "the configuration revision") {
+			t.Errorf("revision %q: exit code %d, stderr %q; want 2 and the revision named", revision, code, stderr.String())
+		}
+	}
+}
+
 func TestApisixYamlCarriesTheApplicationCertificateAndEndsWithTheMarker(t *testing.T) {
 	in := newInputs(t)
 	in.Fragment(t, "projects", `
@@ -128,12 +200,16 @@ routes:
 		t.Errorf("apisix.yaml does not end with the #END marker: %q", content[max(0, len(content)-40):])
 	}
 	ssls := out.apisix(t, edgeAddress).items(t, "ssls")
-	if len(ssls) != 1 {
-		t.Fatalf("got %d certificates, want 1", len(ssls))
+	if len(ssls) != 2 {
+		t.Fatalf("got %d certificates, want 2", len(ssls))
 	}
 	equal(t, "snis", ssls[0]["snis"], []any{fixture.ApplicationHostname})
 	equal(t, "cert", ssls[0]["cert"], string(in.Read(t, "secrets/application.crt")))
 	equal(t, "key", ssls[0]["key"], string(in.Read(t, "secrets/application.key")))
+	// Edge's own certificate, which carries the name edge, serves the internal listener (section 07).
+	equal(t, "snis", ssls[1]["snis"], []any{"edge"})
+	equal(t, "cert", ssls[1]["cert"], string(in.Read(t, "secrets/edge.crt")))
+	equal(t, "key", ssls[1]["key"], string(in.Read(t, "secrets/edge.key")))
 }
 
 func TestConfigYamlRunsFileDrivenModeWithTheListenersOfTheDesign(t *testing.T) {
@@ -164,7 +240,7 @@ func TestConfigYamlRunsFileDrivenModeWithTheListenersOfTheDesign(t *testing.T) {
 		"client_header_buffer_size 4k;\nlarge_client_header_buffers 4 16k;\nproxy_buffer_size 16k;\nproxy_busy_buffers_size 16k;\n")
 
 	equal(t, "plugins", config["plugins"], []any{
-		"client-control", "forward-auth", "limit-conn", "limit-count", "limit-req", "opentelemetry",
+		"client-control", "forward-auth", "limit-conn", "limit-count", "limit-req", "mocking", "opentelemetry",
 		"prometheus", "proxy-rewrite", "public-api", "real-ip", "request-id", "response-rewrite",
 	})
 	equal(t, "plugin_attr", config["plugin_attr"], map[string]any{
@@ -256,7 +332,7 @@ func TestAMissingInputIsAUsageError(t *testing.T) {
 	args := newInputs(t).Args(t.TempDir())
 	var stdout, stderr bytes.Buffer
 
-	code := run(args[:len(args)-2], &stdout, &stderr, loadsEverything{}) // without --out
+	code := run(args[:len(args)-2], &stdout, &stderr, loadsEverything{}, quickly) // without --out
 
 	if code != 2 || !strings.Contains(stderr.String(), "--out is required") {
 		t.Errorf("exit code %d, stderr %q; want 2 and the missing flag named", code, stderr.String())
@@ -303,7 +379,7 @@ func renderWith(t *testing.T, in *fixture.Inputs, trial application.Trial) (int,
 	t.Helper()
 	out := filepath.Join(t.TempDir(), "out")
 	var stdout, stderr bytes.Buffer
-	code := run(in.Args(out), &stdout, &stderr, trial)
+	code := run(in.Args(out), &stdout, &stderr, trial, quickly)
 	return code, stderr.String(), output{dir: out}
 }
 
