@@ -40,10 +40,9 @@ func TestCompleteInputsAreRead(t *testing.T) {
 routes:
   - {paths: ["/*"], methods: [GET], auth: anonymous}
 `)
-	// A contract may span several documents, in YAML or JSON. A file without an openapi key is not
-	// one of them.
-	in.Write(t, "contracts/projects/members.json", `{"openapi": "3.1.0", "paths": {"/api/v1/projects/{projectId}/members": {}}}`)
-	in.Write(t, "contracts/projects/schemas.yaml", "paths:\n  /api/v1/not-a-contract: {}\n")
+	// A contract is one file, openapi.yaml (layout standard), so another document beside it adds no
+	// path.
+	in.Write(t, "contracts/projects/members.yaml", "openapi: 3.0.3\npaths:\n  /api/v1/projects/{projectId}/members: {}\n")
 
 	inputs, err := read(in)
 
@@ -63,9 +62,7 @@ routes:
 		t.Errorf("fragments: got %+v, want %+v", inputs.Fragments, want)
 	}
 	// Authoring has no contract, and so no entry.
-	wantContracts := map[application.Slug][]string{"projects": {
-		"/api/v1/projects", "/api/v1/projects/{projectId}", "/api/v1/projects/{projectId}/members",
-	}}
+	wantContracts := map[application.Slug][]string{"projects": {"/api/v1/projects", "/api/v1/projects/{projectId}"}}
 	if !reflect.DeepEqual(inputs.Contracts, wantContracts) {
 		t.Errorf("contracts: got %v, want %v", inputs.Contracts, wantContracts)
 	}
@@ -161,8 +158,6 @@ routes:
 
 		{"a contract that is not YAML", "contracts/projects/openapi.yaml", "openapi: [", false,
 			filepath.Join("contracts", "projects", "openapi.yaml") + ": yaml:"},
-		{"a JSON contract that is not JSON", "contracts/projects/members.json", `{"openapi": "3.1.0",`, false,
-			filepath.Join("contracts", "projects", "members.json") + ": "},
 		{"a certificate and a key that do not belong together", "secrets/application.crt", string(otherCertificate), false,
 			"application.crt and application.key: "},
 		{"a trust store without a certificate", "secrets/ca.crt", "not a certificate\n", false,

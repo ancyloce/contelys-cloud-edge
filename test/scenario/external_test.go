@@ -60,6 +60,45 @@ func TestAnAnonymousRequestThroughTheExternalListenerReachesItsDeployableAndRetu
 	}
 }
 
+const authoringFragment = `
+routes:
+  - paths: [/*]
+    methods: [GET]
+    auth: anonymous
+`
+
+// Design section 03: Authoring answers every path outside /api/ that no other route claims. An
+// unclaimed path under /api/ gets Edge's 404, and so does a path under /internal, which no fragment
+// may claim, whatever its case and also percent-encoded.
+func TestAuthoringAnswersTheRemainderOutsideTheAPIAndNeverAnInternalPath(t *testing.T) {
+	t.Parallel()
+	ca := fixture.NewAuthority(t)
+	authoring := startStub(t, ca, application.AuthoringSlug, string(application.AuthoringSlug))
+	projects := startStub(t, ca, "projects", "projects")
+	out := setup{ca: ca, stubs: []*stub{authoring, projects}, fragments: map[application.Slug]string{
+		application.AuthoringSlug: authoringFragment,
+		"projects":                projectsFragment,
+	}}.render(t)
+	edge := startEdge(t, ca, out)
+
+	answered := map[string]string{"/": "authoring", "/editor/page": "authoring", "/apiary": "authoring", "/api/v1/projects/42": "projects"}
+	for path, slug := range answered {
+		response := edge.get(t, externalListener, path, nil)
+		if response.StatusCode != stubStatus || response.Header.Get(stubHeader) != slug {
+			t.Errorf("GET %s: got %d from %q, want %d from %s", path, response.StatusCode, response.Header.Get(stubHeader), stubStatus, slug)
+		}
+	}
+	for _, path := range []string{"/api", "/api/", "/api/v1/unknown", "/internal", "/internal/v1/authentication", "/INTERNAL/v1/authentication", "/%69nternal/v1/authentication"} {
+		response := edge.get(t, externalListener, path, nil)
+		if response.StatusCode != http.StatusNotFound || response.Header.Get(stubHeader) != "" {
+			t.Errorf("GET %s: got %d from %q, want Edge's 404", path, response.StatusCode, response.Header.Get(stubHeader))
+		}
+	}
+	if got := len(authoring.recorded()); got != 3 {
+		t.Errorf("Authoring received %d requests, want the 3 outside /api/", got)
+	}
+}
+
 func TestAnUpstreamWhoseCertificateCarriesAnotherNameIsNeverCalled(t *testing.T) {
 	t.Parallel()
 	ca := fixture.NewAuthority(t)

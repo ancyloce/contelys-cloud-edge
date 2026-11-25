@@ -50,9 +50,9 @@ type Instances map[Slug][]Instance
 // renderer writes an apisix.yaml for.
 const EdgeSlug Slug = "edge"
 
-// KeycloakSlug names Keycloak's instances in the instances file. Keycloak is an infrastructure
+// keycloakSlug names Keycloak's instances in the instances file. Keycloak is an infrastructure
 // product and not a deployable, so Edge's own template holds its routes (section 03).
-const KeycloakSlug Slug = "keycloak"
+const keycloakSlug Slug = "keycloak"
 
 // AuthoringSlug is Authoring's slug. Its fragment alone may claim the remainder of the application
 // hostname, and it has no OpenAPI contract (section 03).

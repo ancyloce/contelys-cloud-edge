@@ -9,6 +9,33 @@ type ApisixFile struct {
 	SSLs      []SSL      `yaml:"ssls"`
 }
 
+// routeIDs are the ids of the file's routes, in its order.
+func (f ApisixFile) routeIDs() []string {
+	ids := make([]string, len(f.Routes))
+	for i, route := range f.Routes {
+		ids[i] = route.ID
+	}
+	return ids
+}
+
+// upstreamIDs are the ids of the file's upstreams, in its order.
+func (f ApisixFile) upstreamIDs() []string {
+	ids := make([]string, len(f.Upstreams))
+	for i, upstream := range f.Upstreams {
+		ids[i] = upstream.ID
+	}
+	return ids
+}
+
+// sslIDs are the ids of the file's certificates, in its order.
+func (f ApisixFile) sslIDs() []string {
+	ids := make([]string, len(f.SSLs))
+	for i, ssl := range f.SSLs {
+		ids[i] = ssl.ID
+	}
+	return ids
+}
+
 // Route is one APISIX route. Every route carries an explicit id, a name and a listener condition.
 type Route struct {
 	ID         string         `yaml:"id"`

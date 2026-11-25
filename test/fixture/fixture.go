@@ -199,8 +199,9 @@ func (in *Inputs) Fragment(t testing.TB, slug, content string) {
 	in.Write(t, filepath.Join("fragments", slug, infrastructure.FragmentFile), content)
 }
 
-// Contract writes the OpenAPI contract of the deployable slug, with the given path templates, such
-// as /api/v1/projects/{projectId}, each with one operation.
+// Contract writes the OpenAPI contract of the deployable slug, one file openapi.yaml in OpenAPI 3.0.3
+// as the layout standard gives it, with the given path templates, such as
+// /api/v1/projects/{projectId}, each with one operation.
 func (in *Inputs) Contract(t testing.TB, slug string, paths ...string) {
 	t.Helper()
 	operations := map[string]any{}
@@ -208,7 +209,7 @@ func (in *Inputs) Contract(t testing.TB, slug string, paths ...string) {
 		operations[path] = map[string]any{"get": map[string]any{"responses": map[string]any{"200": map[string]any{"description": "OK"}}}}
 	}
 	content, err := yaml.Marshal(map[string]any{
-		"openapi": "3.1.0",
+		"openapi": "3.0.3",
 		"info":    map[string]any{"title": slug, "version": "1.0.0"},
 		"paths":   operations,
 	})

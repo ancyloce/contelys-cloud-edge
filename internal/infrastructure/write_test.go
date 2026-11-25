@@ -95,3 +95,55 @@ func TestARenderedFileWithAReferenceToAnEnvironmentVariableWritesNothing(t *test
 		})
 	}
 }
+
+// Every file is written beside its current one before any is renamed into place, so a failure while
+// writing one of them replaces none.
+func TestAFailureWhileWritingOneFileLeavesEveryCurrentFileInPlace(t *testing.T) {
+	out := t.TempDir()
+	file := func(id string) application.ApisixFile {
+		return application.ApisixFile{Routes: []application.Route{{ID: id}}}
+	}
+	if err := (infrastructure.Files{}).Write(out, application.Output{
+		Instances: []application.InstanceOutput{{Address: "10.0.0.5", File: file("current")}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The second instance's directory cannot be made, because a file holds its name.
+	if err := os.WriteFile(filepath.Join(out, "10.0.0.6"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := infrastructure.Files{}.Write(out, application.Output{Instances: []application.InstanceOutput{
+		{Address: "10.0.0.5", File: file("changed")}, {Address: "10.0.0.6", File: file("changed")},
+	}})
+
+	if err == nil {
+		t.Fatal("the write succeeded")
+	}
+	content, err := os.ReadFile(filepath.Join(out, "10.0.0.5", "apisix.yaml"))
+	if err != nil || !bytes.Contains(content, []byte("id: current")) {
+		t.Errorf("the current apisix.yaml was replaced: %s, %v", content, err)
+	}
+	entries, err := os.ReadDir(filepath.Join(out, "10.0.0.5"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("a temporary file is left behind: %v", entries)
+	}
+}
+
+// The trial load runs before the files are written, so it refuses such a file first, with the same
+// message and before it starts a container.
+func TestTheTrialLoadRefusesAReferenceToAnEnvironmentVariableBeforeItStartsAContainer(t *testing.T) {
+	_, err := infrastructure.DockerTrial{}.Load(application.Candidate{
+		Image:   "contelys/edge",
+		Address: "10.0.0.5",
+		File:    application.ApisixFile{Routes: []application.Route{{ID: "external.projects.cec1c806d8c4", Host: "app${{HOST}}.example.test"}}},
+	})
+
+	const want = "the apisix.yaml of 10.0.0.5 contains ${{, which APISIX reads as a reference to an environment variable"
+	if err == nil || err.Error() != want {
+		t.Errorf("got %v, want %q", err, want)
+	}
+}

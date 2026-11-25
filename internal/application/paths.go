@@ -13,17 +13,19 @@ import (
 const remainder = "/*"
 
 // checkPaths applies the rules of one fragment: it ships a fragment at all, no path lies under
-// /internal, only Authoring claims the remainder, every path is in the deployable's OpenAPI contract
-// except Authoring's, and two of its routes list one path only for methods that the other does not.
+// /internal, a domain service's paths lie under /api/ and Authoring's outside it, only Authoring
+// claims the remainder, every path is in the deployable's OpenAPI contract except Authoring's, and
+// two of its routes list one path only for methods that the other does not.
 func checkPaths(fragment Fragment, contracts map[Slug][]string) error {
 	refuse := func(format string, a ...any) error {
 		return &Refusal{Fragment: fragment.Slug, Rule: fmt.Sprintf(format, a...)}
 	}
-	if fragment.Slug == KeycloakSlug || fragment.Slug == EdgeSlug {
+	if fragment.Slug == keycloakSlug || fragment.Slug == EdgeSlug {
 		return refuse("Edge's own template holds the routes to %s, so it ships no fragment", fragment.Slug)
 	}
+	authoring := fragment.Slug == AuthoringSlug
 	contract, hasContract := contracts[fragment.Slug]
-	if fragment.Slug != AuthoringSlug && !hasContract {
+	if !authoring && !hasContract {
 		return refuse("the deployable has no OpenAPI contract")
 	}
 	listedBy := map[string]int{} // "METHOD path" to the number of the route that lists it
@@ -33,9 +35,16 @@ func checkPaths(fragment Fragment, contracts map[Slug][]string) error {
 			switch {
 			case underInternal(path):
 				return refuse("route %d: %s lies under /internal, which no fragment may claim", n, path)
-			case path == remainder && fragment.Slug != AuthoringSlug:
+			case path == remainder && !authoring:
 				return refuse("route %d: %s claims the remainder of the application hostname, which only Authoring's fragment may claim", n, path)
-			case fragment.Slug != AuthoringSlug && !inContract(path, contract):
+			case !authoring && !underAPI(path):
+				return refuse("route %d: %s lies outside /api/, where the API lives, and only Authoring's fragment claims paths outside it", n, path)
+			case authoring && path != remainder && underAPI(path):
+				return refuse("route %d: %s lies under /api/, which the API reserves", n, path)
+			case !authoring && !inContract(path, contract):
+				if _, isPrefix := prefixBase(path); isPrefix {
+					return refuse("route %d: %s stands for no parameter of a path of the deployable's OpenAPI contract", n, path)
+				}
 				return refuse("route %d: %s is not a path of the deployable's OpenAPI contract", n, path)
 			}
 			for _, method := range route.Methods {
@@ -89,25 +98,47 @@ func checkConflicts(fragments []Fragment) error {
 	return nil
 }
 
+// prefixBase is what precedes the * of a prefix, a path that ends in /*, such as /api/v1/projects/
+// for /api/v1/projects/*. It reports false for an exact path.
+func prefixBase(path string) (string, bool) {
+	if !strings.HasSuffix(path, "/*") {
+		return "", false
+	}
+	return strings.TrimSuffix(path, "*"), true
+}
+
 // under reports whether path lies under prefix, a path that ends in /*: it starts with what precedes
 // the * and is not the prefix itself.
 func under(path, prefix string) bool {
-	base, isPrefix := strings.CutSuffix(prefix, "*")
+	base, isPrefix := prefixBase(prefix)
 	return isPrefix && path != prefix && strings.HasPrefix(path, base)
 }
 
 // underInternal reports whether the first segment of path is internal, in any letters: Edge never
 // publishes an internal operation on the external listener.
 func underInternal(path string) bool {
+	return strings.EqualFold(firstSegment(path), "internal")
+}
+
+// underAPI reports whether path lies in the reserved prefix /api/, where the API lives.
+func underAPI(path string) bool {
+	return firstSegment(path) == "api"
+}
+
+func firstSegment(path string) string {
 	first, _, _ := strings.Cut(strings.TrimPrefix(path, "/"), "/")
-	return strings.EqualFold(first, "internal")
+	return first
 }
 
 // inContract reports whether a fragment's path is a path of the contract. An exact path matches one
 // of the contract's path templates, in which a parameter such as {projectId} stands for one segment.
-// A prefix covers at least one of them.
+// A prefix stands for a parameter: the segment that follows it in one of the templates holds one, as
+// /api/v1/projects/* stands for {projectId} in /api/v1/projects/{projectId}.
 func inContract(path string, contract []string) bool {
-	base, isPrefix := strings.CutSuffix(path, "*")
+	base, isPrefix := prefixBase(path)
+	if !isPrefix {
+		base = path
+	}
 	segments := strings.Split(strings.TrimPrefix(base, "/"), "/")
 	if isPrefix {
 		segments = segments[:len(segments)-1] // what follows the slash before the *
@@ -115,7 +146,8 @@ func inContract(path string, contract []string) bool {
 	for _, template := range contract {
 		templateSegments := strings.Split(strings.TrimPrefix(template, "/"), "/")
 		switch {
-		case isPrefix && len(templateSegments) > len(segments) && matchSegments(templateSegments[:len(segments)], segments):
+		case isPrefix && len(templateSegments) > len(segments) && matchSegments(templateSegments[:len(segments)], segments) &&
+			parameter.MatchString(templateSegments[len(segments)]):
 			return true
 		case !isPrefix && len(templateSegments) == len(segments) && matchSegments(templateSegments, segments):
 			return true

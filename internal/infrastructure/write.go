@@ -2,7 +2,9 @@ package infrastructure
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -14,9 +16,22 @@ import (
 
 // Write implements application.Sink. It encodes and checks every file before it writes any, so a
 // file that breaks a rule leaves the current ones in place. Each file is written beside the current
-// one and renamed into place, so that APISIX never reads a half-written file. apisix.yaml holds
-// keys, so only its owner may read it.
+// one, and only when all of them are written are they renamed into place, so that APISIX never reads
+// a half-written file and a failure while writing replaces none. Until every new file is in place,
+// each current file keeps a second name, so that a failed rename puts back the files that it already
+// replaced. apisix.yaml holds keys, so only its owner may read it.
 func (Files) Write(dir string, out application.Output) error {
+	return write(dir, out, os.Rename)
+}
+
+// replacement is one file that write puts into place: its path, the new file beside it, and the
+// current file's second name, which is empty when there is no current file.
+type replacement struct {
+	path, temporary, previous string
+}
+
+// write is Write with the rename that puts each new file into place.
+func write(dir string, out application.Output, rename func(from, to string) error) error {
 	type file struct {
 		path    string
 		content []byte
@@ -24,7 +39,7 @@ func (Files) Write(dir string, out application.Output) error {
 	}
 	var files []file
 	for _, instance := range out.Instances {
-		content, err := encodeRouteFile("the apisix.yaml of "+instance.Address, instance.File)
+		content, err := encodeRouteFile(routeFileName(instance.Address), instance.File)
 		if err != nil {
 			return err
 		}
@@ -36,19 +51,76 @@ func (Files) Write(dir string, out application.Output) error {
 	}
 	files = append(files, file{filepath.Join(dir, "config.yaml"), config, 0o644})
 
+	var replacements []replacement
+	defer func() {
+		for _, r := range replacements {
+			os.Remove(r.temporary) // a renamed one is gone already
+			if r.previous != "" {
+				os.Remove(r.previous) // a restored one is gone already
+			}
+		}
+	}()
 	for _, f := range files {
 		if err := os.MkdirAll(filepath.Dir(f.path), 0o755); err != nil {
 			return err
 		}
-		if err := writeAtomically(f.path, f.content, f.mode); err != nil {
+		temporary, err := writeBeside(f.path, f.content, f.mode)
+		if err != nil {
 			return err
 		}
+		replacements = append(replacements, replacement{path: f.path, temporary: temporary})
+		if replacements[len(replacements)-1].previous, err = keepCurrent(f.path); err != nil {
+			return err
+		}
+	}
+	for i, r := range replacements {
+		if err := rename(r.temporary, r.path); err != nil {
+			return errors.Join(err, restore(replacements[:i], rename))
+		}
+	}
+	return nil
+}
+
+// keepCurrent gives the current file at path a second name beside it, a hard link, so that the file
+// is never missing, and returns that name, or "" when there is no current file.
+func keepCurrent(path string) (string, error) {
+	previous := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".previous")
+	if err := os.Remove(previous); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", err // one that a killed renderer left behind
+	}
+	if err := os.Link(path, previous); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", nil
+		}
+		return "", fmt.Errorf("keep the current %s: %w", path, err)
+	}
+	return previous, nil
+}
+
+// restore undoes the renames of replaced: each current file returns under its own name, with its
+// own modification time, and a file that had no current one is removed.
+func restore(replaced []replacement, rename func(from, to string) error) error {
+	var errs []error
+	for _, r := range replaced {
+		if r.previous == "" {
+			errs = append(errs, os.Remove(r.path))
+		} else {
+			errs = append(errs, rename(r.previous, r.path))
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return fmt.Errorf("put back the files already replaced: %w", err)
 	}
 	return nil
 }
 
 // endMarker closes every apisix.yaml: APISIX reads a file only if it ends with it.
 const endMarker = "#END\n"
+
+// routeFileName names the apisix.yaml of the Edge instance at address in a failure.
+func routeFileName(address string) string {
+	return "the apisix.yaml of " + address
+}
 
 // encodeRouteFile encodes an apisix.yaml, which name describes in a failure, and checks its bytes.
 func encodeRouteFile(name string, file application.ApisixFile) ([]byte, error) {
@@ -109,10 +181,12 @@ func encode(v any) ([]byte, error) {
 	return buffer.Bytes(), nil
 }
 
-func writeAtomically(path string, content []byte, mode os.FileMode) (err error) {
+// writeBeside writes content into a new file in the directory of path, with the given mode and
+// synced to disk, and returns the new file's path for the rename into place.
+func writeBeside(path string, content []byte, mode os.FileMode) (_ string, err error) {
 	temporary, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer func() {
 		if err != nil {
@@ -121,18 +195,18 @@ func writeAtomically(path string, content []byte, mode os.FileMode) (err error) 
 	}()
 	if _, err = temporary.Write(content); err != nil {
 		temporary.Close()
-		return err
+		return "", err
 	}
 	if err = temporary.Chmod(mode); err != nil {
 		temporary.Close()
-		return err
+		return "", err
 	}
 	if err = temporary.Sync(); err != nil {
 		temporary.Close()
-		return err
+		return "", err
 	}
 	if err = temporary.Close(); err != nil {
-		return err
+		return "", err
 	}
-	return os.Rename(temporary.Name(), path)
+	return temporary.Name(), nil
 }
