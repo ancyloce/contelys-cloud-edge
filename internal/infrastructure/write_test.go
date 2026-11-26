@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/contelys/contelys-cloud-edge/internal/application"
-	"github.com/contelys/contelys-cloud-edge/internal/infrastructure"
+	"github.com/ancyloce/contelys-cloud-edge/internal/application"
+	"github.com/ancyloce/contelys-cloud-edge/internal/infrastructure"
 )
 
 // answerRoute carries the placeholder of the file's digest, as the fixed-response route of every

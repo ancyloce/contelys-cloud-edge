@@ -11,7 +11,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/contelys/contelys-cloud-edge/internal/application"
+	"github.com/ancyloce/contelys-cloud-edge/internal/application"
 )
 
 // ContractFile is the OpenAPI contract of one domain service, in its directory of the shared

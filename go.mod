@@ -1,4 +1,4 @@
-module github.com/contelys/contelys-cloud-edge
+module github.com/ancyloce/contelys-cloud-edge
 
 go 1.27.0
 

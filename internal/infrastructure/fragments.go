@@ -13,7 +13,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"go.yaml.in/yaml/v3"
 
-	"github.com/contelys/contelys-cloud-edge/internal/application"
+	"github.com/ancyloce/contelys-cloud-edge/internal/application"
 )
 
 // FragmentFile is the name of a route fragment in its deployable's directory (ADR 0058). The

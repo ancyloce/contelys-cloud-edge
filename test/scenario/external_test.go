@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/contelys/contelys-cloud-edge/internal/application"
-	"github.com/contelys/contelys-cloud-edge/test/fixture"
+	"github.com/ancyloce/contelys-cloud-edge/internal/application"
+	"github.com/ancyloce/contelys-cloud-edge/test/fixture"
 )
 
 const projectsFragment = `

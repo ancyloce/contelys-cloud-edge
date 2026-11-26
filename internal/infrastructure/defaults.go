@@ -8,7 +8,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/contelys/contelys-cloud-edge/internal/application"
+	"github.com/ancyloce/contelys-cloud-edge/internal/application"
 )
 
 // defaultsFile holds every value that the renderer needs (Edge ADR 0002). It is embedded, so that

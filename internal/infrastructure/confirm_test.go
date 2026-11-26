@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/contelys/contelys-cloud-edge/internal/application"
-	"github.com/contelys/contelys-cloud-edge/internal/infrastructure"
+	"github.com/ancyloce/contelys-cloud-edge/internal/application"
+	"github.com/ancyloce/contelys-cloud-edge/internal/infrastructure"
 )
 
 // The rules of reading the distributed apisix.yaml, each with a failing fixture. The command's own

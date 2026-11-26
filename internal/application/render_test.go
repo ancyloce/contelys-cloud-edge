@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/contelys/contelys-cloud-edge/internal/application"
+	"github.com/ancyloce/contelys-cloud-edge/internal/application"
 )
 
 // The application's rules, each with a failing fixture. The use case is driven through its ports: a

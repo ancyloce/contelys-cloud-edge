@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/contelys/contelys-cloud-edge/internal/application"
-	"github.com/contelys/contelys-cloud-edge/internal/infrastructure"
-	"github.com/contelys/contelys-cloud-edge/test/fixture"
+	"github.com/ancyloce/contelys-cloud-edge/internal/application"
+	"github.com/ancyloce/contelys-cloud-edge/internal/infrastructure"
+	"github.com/ancyloce/contelys-cloud-edge/test/fixture"
 )
 
 // The rules of reading the input files, each with a failing fixture: strict decoding, the fragment

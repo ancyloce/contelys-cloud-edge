@@ -12,9 +12,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/contelys/contelys-cloud-edge/internal/application"
-	"github.com/contelys/contelys-cloud-edge/internal/infrastructure"
-	"github.com/contelys/contelys-cloud-edge/internal/interfaces/commands"
+	"github.com/ancyloce/contelys-cloud-edge/internal/application"
+	"github.com/ancyloce/contelys-cloud-edge/internal/infrastructure"
+	"github.com/ancyloce/contelys-cloud-edge/internal/interfaces/commands"
 )
 
 // confirmation is how edge confirm reads an instance. Every answer over one polling interval of

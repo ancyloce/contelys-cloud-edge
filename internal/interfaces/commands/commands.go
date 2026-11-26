@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/contelys/contelys-cloud-edge/internal/application"
+	"github.com/ancyloce/contelys-cloud-edge/internal/application"
 )
 
 // The exit codes of the command line (Edge ADR 0002 and Edge ADR 0005).

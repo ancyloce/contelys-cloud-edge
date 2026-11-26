@@ -18,8 +18,8 @@ import (
 	"github.com/moby/moby/client"
 	"go.yaml.in/yaml/v3"
 
-	"github.com/contelys/contelys-cloud-edge/internal/application"
-	"github.com/contelys/contelys-cloud-edge/internal/infrastructure"
+	"github.com/ancyloce/contelys-cloud-edge/internal/application"
+	"github.com/ancyloce/contelys-cloud-edge/internal/infrastructure"
 )
 
 // These scenarios show that a fragment that breaks a rule never reaches traffic (ticket 07 of

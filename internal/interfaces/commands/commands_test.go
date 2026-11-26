@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/contelys/contelys-cloud-edge/internal/application"
-	"github.com/contelys/contelys-cloud-edge/internal/interfaces/commands"
+	"github.com/ancyloce/contelys-cloud-edge/internal/application"
+	"github.com/ancyloce/contelys-cloud-edge/internal/interfaces/commands"
 )
 
 // The command line's exit codes (Edge ADR 0002), each with a failing fixture.

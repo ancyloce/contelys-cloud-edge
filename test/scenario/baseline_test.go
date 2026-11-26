@@ -18,8 +18,8 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/contelys/contelys-cloud-edge/internal/application"
-	"github.com/contelys/contelys-cloud-edge/test/fixture"
+	"github.com/ancyloce/contelys-cloud-edge/internal/application"
+	"github.com/ancyloce/contelys-cloud-edge/test/fixture"
 )
 
 // These scenarios confirm on the test baseline what the design relies on from APISIX itself

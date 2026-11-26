@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/contelys/contelys-cloud-edge/internal/application"
+	"github.com/ancyloce/contelys-cloud-edge/internal/application"
 )
 
 // answerRoute carries the placeholder of the file's digest, as the fixed-response route of every

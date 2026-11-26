@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/contelys/contelys-cloud-edge/internal/application"
-	"github.com/contelys/contelys-cloud-edge/test/fixture"
+	"github.com/ancyloce/contelys-cloud-edge/internal/application"
+	"github.com/ancyloce/contelys-cloud-edge/test/fixture"
 )
 
 // These tests drive edge confirm through its command line against an instance of their own: a TLS

@@ -32,8 +32,8 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 	"go.yaml.in/yaml/v3"
 
-	"github.com/contelys/contelys-cloud-edge/internal/application"
-	"github.com/contelys/contelys-cloud-edge/test/fixture"
+	"github.com/ancyloce/contelys-cloud-edge/internal/application"
+	"github.com/ancyloce/contelys-cloud-edge/test/fixture"
 )
 
 const (
@@ -64,7 +64,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	edgeCommand = filepath.Join(dir, "edge")
-	build := exec.Command("go", "build", "-o", edgeCommand, "github.com/contelys/contelys-cloud-edge/cmd/edge")
+	build := exec.Command("go", "build", "-o", edgeCommand, "github.com/ancyloce/contelys-cloud-edge/cmd/edge")
 	build.Stdout, build.Stderr = os.Stderr, os.Stderr
 	if err := build.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "build the edge command:", err)
